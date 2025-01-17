@@ -10,7 +10,7 @@
 
     @author Pedro Sousa Lacerda
     @email pslacerda@gmail.com
-    @license BSD-2-Clause
+    @license Free Software
 """
 
 #
@@ -462,7 +462,7 @@ def new_load_results_widget():
     # Show interactions contacts
     #
     interactions_check = QCheckBox()
-    interactions_check.setChecked(False)
+    interactions_check.setChecked(True)
 
     #
     # Choose output folder
