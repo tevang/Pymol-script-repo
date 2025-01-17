@@ -1,5 +1,5 @@
 """
-    = vs.py =
+    = vina.py =
 
     This plugin enables small scale virtual screening with the AutoDock Vina
     software stack. It uses Meeko and Scrubber to prepare molecular ligands,
@@ -10,7 +10,6 @@
 
     @author Pedro Sousa Lacerda
     @email pslacerda@gmail.com
-    @license Free Software
 """
 
 #
@@ -338,7 +337,6 @@ class ResultsWidget(QWidget):
                 cmd.load(filename, 'Vina.lig', multiplex=True, zoom=False)
                 cmd.set_name(f'Vina.lig_{mode.zfill(4)}', 'Vina.lig')
                 cmd.delete('Vina.lig_*')
-                cmd.group('Vina', 'Vina.lig')
                 cmd.alter('Vina.lig', 'chain="Z"')
                 cmd.alter('Vina.lig', 'resn="LIG"')
                 cmd.alter('Vina.lig', 'resi=1')
@@ -485,7 +483,10 @@ def new_load_results_widget():
         
         with open(docking_file, 'r') as file:
             project_data = json.load(file)
-
+        
+        if results_widget is not None:
+            results_widget.setParent(None)
+        del results_widget
         results_widget = ResultsWidget(
             project_data,
             max_load_spin.value(),
@@ -592,10 +593,6 @@ class VinaThreadDialog(QDialog):
 
 #
 # Run docking software
-#
-# Assumes that all arguments are ok. For instance the target_sel returns the
-# atoms that will be at the final target.pdb file. Only input files and subprocess
-# commands will be checked.
 #
 
 
