@@ -1,5 +1,5 @@
 """
-    = vs.py =
+    = vina.py =
 
     This plugin enables small scale virtual screening with the AutoDock Vina
     software stack. It uses Meeko and Scrubber to prepare molecular ligands,
@@ -12,25 +12,14 @@
     @email pslacerda@gmail.com
 """
 
+
+#
+# SETUP PIP PACKAGES
+#
 import subprocess
-from pymol import Qt
+import shutil
 
-
-#
-# SETUP SOME PIP PACKAGES
-#
-
-try:
-    import numpy as np
-    import pandas as pd
-    from scipy.spatial import distance_matrix, distance
-    from scipy.cluster.hierarchy import dendrogram, linkage
-    from scipy.stats import pearsonr
-    from matplotlib import pyplot as plt
-    import seaborn as sb
-    from strenum import StrEnum
-    
-except ImportError:
+if not shutil.which('scrub.py'):
     subprocess.check_call(
         [
             "python",
@@ -38,20 +27,13 @@ except ImportError:
             "pip",
             "--disable-pip-version-check",
             "install",
-            "numpy",
-            "scipy",
-            "jinja2",
-            "matplotlib",
-            "seaborn",
-            "pandas",
-            "openpyxl",
-            "StrEnum",
+            "https://github.com/forlilab/scrubber/archive/refs/heads/develop.zip",
         ],
     )
 
 
 #
-# SETUP VINA & MEEKO & PLIP
+# SETUP CONDA PACKAGES
 #
 
 try:
@@ -69,42 +51,13 @@ except ImportError:
             "-c",
             "conda-forge",
             "numpy",
-            "swig",
-            "boost-cpp",
-            "libboost",
-            "sphinx",
-            "sphinx_rtd_theme",
             "meeko",
             "vina",
-            "prody",
-            "openbabel",
-            "plip"
+            "plip",
+            "numpy"
         ],
     )
 
-
-#
-# SCRUBBER
-#
-
-import shutil
-import urllib.request
-
-if not shutil.which('scrub.py'):
-    zip = "%s/scrubber.zip" % data_dir
-    url = "https://github.com/forlilab/scrubber/archive/refs/heads/develop.zip"
-    urllib.request.urlretrieve(url, zip)
-
-    subprocess.check_call(
-        [
-            "python",
-            "-m",
-            "pip",
-            "--disable-pip-version-check",
-            "install",
-            zip     
-        ]
-    )
 
 
 #
@@ -133,42 +86,43 @@ import pymol
 import pymol.gui
 from pymol import cmd
 from pymol.cgo import CYLINDER, SPHERE, COLOR
+from pymol import Qt
 import numpy as np
 
-QWidget = pymol.Qt.QtWidgets.QWidget
-QFileDialog = pymol.Qt.QtWidgets.QFileDialog
-QFormLayout = pymol.Qt.QtWidgets.QFormLayout
-QPushButton = pymol.Qt.QtWidgets.QPushButton
-QSpinBox = pymol.Qt.QtWidgets.QSpinBox
-QDoubleSpinBox = pymol.Qt.QtWidgets.QDoubleSpinBox
-QDockWidget = pymol.Qt.QtWidgets.QDockWidget
-QLineEdit = pymol.Qt.QtWidgets.QLineEdit
-QCheckBox = pymol.Qt.QtWidgets.QCheckBox
-QApplication = pymol.Qt.QtWidgets.QApplication
-QMessageBox = pymol.Qt.QtWidgets.QMessageBox
-QVBoxLayout = pymol.Qt.QtWidgets.QVBoxLayout
-QTextEdit = pymol.Qt.QtWidgets.QTextEdit
-QDialog = pymol.Qt.QtWidgets.QDialog
-QDialogButtonBox = pymol.Qt.QtWidgets.QDialogButtonBox
-QDesktopWidget = pymol.Qt.QtWidgets.QDesktopWidget
-QProgressBar = pymol.Qt.QtWidgets.QProgressBar
-QAction = pymol.Qt.QtWidgets.QAction
-QComboBox = pymol.Qt.QtWidgets.QComboBox
-QTableWidget = pymol.Qt.QtWidgets.QTableWidget
-QTableWidgetItem = pymol.Qt.QtWidgets.QTableWidgetItem
+QWidget = Qt.QtWidgets.QWidget
+QFileDialog = Qt.QtWidgets.QFileDialog
+QFormLayout = Qt.QtWidgets.QFormLayout
+QPushButton = Qt.QtWidgets.QPushButton
+QSpinBox = Qt.QtWidgets.QSpinBox
+QDoubleSpinBox = Qt.QtWidgets.QDoubleSpinBox
+QDockWidget = Qt.QtWidgets.QDockWidget
+QLineEdit = Qt.QtWidgets.QLineEdit
+QCheckBox = Qt.QtWidgets.QCheckBox
+QApplication = Qt.QtWidgets.QApplication
+QMessageBox = Qt.QtWidgets.QMessageBox
+QVBoxLayout = Qt.QtWidgets.QVBoxLayout
+QTextEdit = Qt.QtWidgets.QTextEdit
+QDialog = Qt.QtWidgets.QDialog
+QDialogButtonBox = Qt.QtWidgets.QDialogButtonBox
+QDesktopWidget = Qt.QtWidgets.QDesktopWidget
+QProgressBar = Qt.QtWidgets.QProgressBar
+QAction = Qt.QtWidgets.QAction
+QComboBox = Qt.QtWidgets.QComboBox
+QTableWidget = Qt.QtWidgets.QTableWidget
+QTableWidgetItem = Qt.QtWidgets.QTableWidgetItem
 QHeaderView = Qt.QtWidgets.QHeaderView
 
-LeftDockWidgetArea = pymol.Qt.QtCore.Qt.LeftDockWidgetArea
-QRegExp = pymol.Qt.QtCore.QRegExp
-QtCore = pymol.Qt.QtCore
-QThread = pymol.Qt.QtCore.QThread
-pyqtSignal = pymol.Qt.QtCore.Signal
+LeftDockWidgetArea = Qt.QtCore.Qt.LeftDockWidgetArea
+QRegExp = Qt.QtCore.QRegExp
+QtCore = Qt.QtCore
+QThread = Qt.QtCore.QThread
+pyqtSignal = Qt.QtCore.Signal
 
-QRegExpValidator = pymol.Qt.QtGui.QRegExpValidator
-QPalette = pymol.Qt.QtGui.QPalette
-QTextDocument = pymol.Qt.QtGui.QTextDocument
-QIntValidator = pymol.Qt.QtGui.QIntValidator
-QTextCursor = pymol.Qt.QtGui.QTextCursor
+QRegExpValidator = Qt.QtGui.QRegExpValidator
+QPalette = Qt.QtGui.QPalette
+QTextDocument = Qt.QtGui.QTextDocument
+QIntValidator = Qt.QtGui.QIntValidator
+QTextCursor = Qt.QtGui.QTextCursor
 
 
 ###############################################
@@ -628,7 +582,7 @@ class VinaThread(BaseThread):
         target_basename = f"{results_dir}/target"
         cmd.save(target_pdb, target_sel)
         command = (
-            f"mk_prepare_receptor.py --read_pdb {target_pdb} -o {target_basename} -p"
+            f"mk_prepare_receptor.py --read_pdb '{target_pdb}' -o '{target_basename}' -p"
         )
         if allow_errors:
             command = f"{command} -a"
@@ -661,7 +615,7 @@ class VinaThread(BaseThread):
         #
         ligands_sdf = results_dir + "/ligands.sdf"
         command = (
-            f"scrub.py -o {ligands_sdf} --ph {ph} --cpu {cpu} {ligands_file}"
+            f"scrub.py -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
         )
         self.logEvent.emit(
             f"""
@@ -683,7 +637,7 @@ class VinaThread(BaseThread):
 
         ligands_pdbqt = results_dir + "/ligands_pdbqt"
         command = (
-            f"mk_prepare_ligand.py -i {ligands_sdf} --multimol_outdir {ligands_pdbqt}"
+            f"mk_prepare_ligand.py -i '{ligands_sdf}' --multimol_outdir '{ligands_pdbqt}'"
         )
         self.logEvent.emit(f"""
             <br/>
@@ -804,8 +758,8 @@ class VinaThread(BaseThread):
             log_txt = f"{output_dir}/{name}.log"
 
             command = base_command + (
-                f' --ligand "{ligand_pdbqt}"'
-                f' --out "{output_pdbqt}"'
+                f" --ligand '{ligand_pdbqt}'"
+                f" --out '{output_pdbqt}'"
             )
             if project_data["flexible"]:
                 rigid_pdbqt = project_data["rigid_pdbqt"]
@@ -1108,28 +1062,27 @@ def new_run_docking_widget():
 
 
 def __init_plugin__(app=None):
+    
+    run_widget = new_run_docking_widget()
+    load_widget = new_load_results_widget()
+
+    run_widget.hide()
+    load_widget.hide()
 
     window = pymol.gui.get_qtwindow()
-    menu_bar = window.menuBar()
-    vina_menu = menu_bar.addMenu("Vina")
+    window.addDockWidget(LeftDockWidgetArea, run_widget)
+    window.addDockWidget(LeftDockWidgetArea, load_widget)
 
-    run_docking_widget = new_run_docking_widget()
-    run_docking_action = vina_menu.addAction("Run docking")
-    window.addDockWidget(LeftDockWidgetArea, run_docking_widget)
-    run_docking_widget.hide()
+    def show_run_widget():
+        run_widget.show()
+    
+    def show_load_widget():
+        load_widget.show()
 
-    @run_docking_action.triggered.connect
-    def toggle():
-        run_docking_widget.show()
+    from pymol.plugins import addmenuitemqt
+    addmenuitemqt("Vina (Run)", show_run_widget)
+    addmenuitemqt("Vina (Analyze)", show_load_widget)
 
-    load_results_widget = new_load_results_widget()
-    load_results_action = vina_menu.addAction("Load docking")
-    window.addDockWidget(LeftDockWidgetArea, load_results_widget)
-    load_results_widget.hide()
-
-    @load_results_action.triggered.connect
-    def toggle():
-        load_results_widget.show()
 
 
 if __name__ in ["pymol", "pmg_tk.startup.XDrugPy"]:
