@@ -1,5 +1,5 @@
 """
-    = vina.py =
+    = vs.py =
 
     This plugin enables small scale virtual screening with the AutoDock Vina
     software stack. It uses Meeko and Scrubber to prepare molecular ligands,
@@ -12,14 +12,7 @@
     @email pslacerda@gmail.com
 """
 
-#
-# SETUP FPOCKET
-#
-
-import platform
 import subprocess
-import sys
-import os.path
 from pymol import Qt
 
 
