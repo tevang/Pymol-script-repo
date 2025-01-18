@@ -35,13 +35,28 @@ if not shutil.which('scrub.py'):
 #
 # SETUP CONDA PACKAGES
 #
-
+if (
+    not shutil.which("mk_prepare_receptor.py")
+    or not shutil.which("mk_prepare_ligand.py")
+    or not shutil.which("scrub.py")
+    or not shutil.which("vina")
+    or not shutil.which("plip")
+):
+    subprocess.check_call(
+        [
+            "conda",
+            "install",
+            "-y",
+            "-c",
+            "conda-forge",
+            "meeko",
+            "vina",
+            "plip",
+            "lxml"
+        ],
+    )
 try:
-    from vina import Vina
-    import meeko
-    import openbabel
-    import plip
-
+    import lxml, matplotlib
 except ImportError:
     subprocess.check_call(
         [
@@ -50,14 +65,10 @@ except ImportError:
             "-y",
             "-c",
             "conda-forge",
-            "numpy",
-            "meeko",
-            "vina",
-            "plip",
-            "numpy"
+            "lxml",
+            "matplotlib"
         ],
     )
-
 
 
 #
@@ -81,6 +92,7 @@ import subprocess
 import json
 from contextlib import contextmanager
 import tempfile
+from collections import Counter
 
 import pymol
 import pymol.gui
@@ -88,6 +100,9 @@ from pymol import cmd
 from pymol.cgo import CYLINDER, SPHERE, COLOR
 from pymol import Qt
 import numpy as np
+from lxml import etree
+from matplotlib import pyplot as plt
+
 
 QWidget = Qt.QtWidgets.QWidget
 QFileDialog = Qt.QtWidgets.QFileDialog
@@ -137,14 +152,6 @@ def run(command):
     output = ret.stdout.decode()
     success = ret.returncode == 0
     return output, success
-
-
-@contextmanager
-def chdir(dir):
-    cwd = os.getcwd()
-    os.chdir(dir)
-    yield
-    os.chdir(cwd)
 
 
 class BaseThread(QThread):
@@ -259,11 +266,10 @@ def parse_vina_pdbqt(filename):
 class ResultsWidget(QWidget):
 
     class ResultsTableWidget(QTableWidget):
-        def __init__(self, project_data, interactions_check):
+        def __init__(self, project_data):
             super().__init__()
             self.project_data = project_data
             self.props = ["Name", "Mode", "Affinity"]
-            self.interactions_check = interactions_check
 
             self.setSelectionBehavior(QTableWidget.SelectRows)
             self.setSelectionMode(QTableWidget.SingleSelection)
@@ -296,16 +302,13 @@ class ResultsWidget(QWidget):
                     cmd.load(filename, 'Vina.prot')
                     cmd.group('Vina', 'Vina.prot')
                         
-                if self.interactions_check:
-                    with tempfile.TemporaryDirectory() as tempdir:
-                        # tempdir = '/tmp/testarr'
-                        pdb_fname = f"{tempdir}/prot_lig.pdb"
-                        pse_fname = f'{tempdir}/PLIP/PROT_LIG_PROTEIN_LIG_Z_1.pse'
-                        cmd.save(pdb_fname, selection='Vina.*')
-                        run(f"plip -f {pdb_fname} -q -s -y --nohydro -o {tempdir}/PLIP")
-                        cmd.load(pse_fname)
+                with tempfile.TemporaryDirectory() as tempdir:
+                    pdb_fname = f"{tempdir}/prot_lig.pdb"
+                    pse_fname = f'{tempdir}/PLIP/PROT_LIG_PROTEIN_LIG_Z_1.pse'
+                    cmd.save(pdb_fname, selection='Vina.*')
+                    run(f"plip -f {pdb_fname} -q -s -y --nohydro -o {tempdir}/PLIP")
+                    cmd.load(pse_fname)
 
-                        
 
         def hideEvent(self, evt):
             self.clearSelection()
@@ -321,17 +324,17 @@ class ResultsWidget(QWidget):
             except ValueError:
                 return self.text() < other.text()
 
-    def __init__(self, project_data, max_load, max_rank, interactions_check):
+    def __init__(self, project_data, max_load, max_mode):
         super().__init__()
         self.project_data = project_data
         self.max_load = max_load
-        self.max_rank = max_rank
+        self.max_mode = max_mode
         self.load_protein()
 
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        self.table = self.ResultsTableWidget(project_data, interactions_check)
+        self.table = self.ResultsTableWidget(project_data)
         layout.addWidget(self.table)
 
         
@@ -360,11 +363,11 @@ class ResultsWidget(QWidget):
         results = itertools.chain.from_iterable(
             map(parse_vina_pdbqt, glob(f"{results_dir}/output/*.out.pdbqt"))
         )
-        results = list(sorted(results, key=itemgetter("affinity")))
+        results = sorted(results, key=itemgetter("affinity"))
         for idx, pose in enumerate(results):
             if idx >= self.max_load:
                 break
-            if pose['mode'] <= self.max_rank:
+            if pose['mode'] <= self.max_mode:
                 self.appendRow(pose)
 
         self.table.setSortingEnabled(True)
@@ -376,6 +379,79 @@ class ResultsWidget(QWidget):
         self.table.setItem(line, 0, self.SortableItem(pose['name']))
         self.table.setItem(line, 1, self.SortableItem(pose['mode']))
         self.table.setItem(line, 2, self.SortableItem(pose['affinity']))
+
+
+def plot_histogram(project_data, max_load, max_mode):
+    results_dir = project_data["results_dir"]
+    results = itertools.chain.from_iterable(
+        map(parse_vina_pdbqt, glob(f"{results_dir}/output/*.out.pdbqt"))
+    )
+    results = list(sorted(results, key=itemgetter("affinity")))
+    cmd.set('pdb_conect_all', 'off')
+    cmd.delete('Vina.prot')
+    fname = project_data['target_pdbqt'][:-2]
+    cmd.load(fname, 'Vina.prot')
+    cmd.alter('Vina.prot', "type='ATOM'")
+    with tempfile.TemporaryDirectory() as tempdir:
+        fnames = []
+        for idx, pose in enumerate(results):
+            if idx >= max_load:
+                break
+            if pose['mode'] <= max_mode:
+                name = pose["name"]
+                mode = str(pose["mode"])
+                in_fname = project_data['results_dir'] + f'/output/{name}.out.pdbqt'
+                out_fname = tempdir + f'/{name}_mode{mode}.out.pdb'
+                cmd.delete('Vina.lig')
+                cmd.load(in_fname, 'Vina.lig', multiplex=True, zoom=False)
+                cmd.set_name(f'Vina.lig_{mode.zfill(4)}', 'Vina.lig')
+                cmd.delete('Vina.lig_*')
+                cmd.alter('Vina.lig', 'chain="Z"')
+                cmd.alter('Vina.lig', 'resn="LIG"')
+                cmd.alter('Vina.lig', 'resi=1')
+                cmd.alter('resn LIG', "type='HETATM'")
+                cmd.save(out_fname, selection='Vina.*')
+                fnames.append(out_fname)
+        command = [f"'{fn}'" for fn in fnames]
+        command = f"plip -f {' '.join(command)} -Oqsx --nohydro"
+        proc = subprocess.run(shlex.split(command), stdout=subprocess.PIPE)
+        output = proc.stdout.decode()
+        assert proc.returncode == 0
+        residues = {
+            "hydrophobic_interaction": [],
+            "hydrogen_bond": [],
+            "water_bridge": [],
+            "salt_bridge": [],
+            "pi_stack": [],
+            "pi_cation_interaction": [],
+            "halogen_bond": [],
+            "metal_complex": []
+        }
+        xml_l = output.split("\n\n")
+        for xml in xml_l:
+            if not xml.strip():
+                continue
+            assert xml.startswith("<report>") and xml.endswith("</report>")
+            plip = etree.fromstring(xml)
+            for interaction in residues:
+                restype = plip.xpath(f"//{interaction}/restype/text()")
+                resnr = plip.xpath(f"//{interaction}/resnr/text()")
+                reschain = plip.xpath(f"//{interaction}/reschain/text()")
+                for res in zip(restype, resnr, reschain):
+                    residues[interaction].append(res)
+        fig, axs = plt.subplots(len(residues), layout="constrained", sharex=True)
+        for ax, interaction in zip(axs, residues):
+            count = Counter(residues[interaction])
+            count = count.most_common()
+            count = sorted(count, key=lambda c: (c[0][2], c[0][1]))
+            if len(count) > 0:
+                res, count = zip(*count)
+            else:
+                res, count = [], []
+            ax.bar(['%s%s%s' % r for r in res], count)
+            ax.set_title(interaction)
+        plt.legend()
+        plt.show()
 
 
 def new_load_results_widget():
@@ -398,28 +474,28 @@ def new_load_results_widget():
     #
     # Only the best poses of each ligand
     #
-    max_rank_spin = QSpinBox(widget)
-    max_rank_spin.setRange(1, 20)
-    max_rank_spin.setValue(9)
-    max_rank_spin.setGroupSeparatorShown(True)
+    max_mode_spin = QSpinBox(widget)
+    max_mode_spin.setRange(1, 20)
+    max_mode_spin.setValue(9)
+    max_mode_spin.setGroupSeparatorShown(True)
 
     #
-    # Show interactions contacts
+    # Plot interaction histogram
     #
-    interactions_check = QCheckBox()
-    interactions_check.setChecked(True)
+    plot_histogram_check = QCheckBox()
+    plot_histogram_check.setChecked(False)
 
     #
     # Choose output folder
     #
-    project_button = QPushButton("Load docking...", widget)
+    show_table_button = QPushButton("Load docking...", widget)
 
-    @project_button.clicked.connect
+    @show_table_button.clicked.connect
     def load_results():
         nonlocal results_widget
         docking_file = str(
             QFileDialog.getOpenFileName(
-                project_button,
+                show_table_button,
                 "Docking file",
                 expanduser("~"),
                 "Docking file (docking.json)",
@@ -437,10 +513,16 @@ def new_load_results_widget():
         results_widget = ResultsWidget(
             project_data,
             max_load_spin.value(),
-            max_rank_spin.value(),
-            interactions_check.isChecked(),
+            max_mode_spin.value(),
         )
-        layout.addWidget(results_widget)
+        layout.setWidget(5, QFormLayout.SpanningRole, results_widget)
+
+        if plot_histogram_check.isChecked():
+            plot_histogram(
+                project_data,
+                max_load_spin.value(),
+                max_mode_spin.value()
+            )
     
     #
     # Results Table
@@ -451,9 +533,9 @@ def new_load_results_widget():
     # Setup form
     #
     layout.addRow("Max load:", max_load_spin)
-    layout.addRow("Max rank:", max_rank_spin)
-    layout.addRow("Run PLIP:", interactions_check)
-    layout.addWidget(project_button)
+    layout.addRow("Max mode:", max_mode_spin)
+    layout.addRow("Plot histogram:", plot_histogram_check)
+    layout.setWidget(4, QFormLayout.SpanningRole, show_table_button)
     widget.setLayout(layout)
 
     return dockWidget
