@@ -386,11 +386,13 @@ class ResultsWidget(QWidget):
             map(parse_vina_pdbqt, glob(f"{results_dir}/output/*.out.pdbqt"))
         )
         results = sorted(results, key=itemgetter("affinity"))
+        count = 0 
         for idx, pose in enumerate(results):
-            if idx >= self.max_load:
-                break
             if pose['mode'] <= self.max_mode:
                 self.appendRow(pose)
+                count += 1
+            if count >= self.max_load:
+                break
 
         self.table.setSortingEnabled(True)
 
@@ -451,9 +453,8 @@ def plot_histogram(project_data, max_load, max_mode):
         "halogen_bond",
         "metal_complex"
     ]
+    count = 0
     for idx, pose in enumerate(results):
-        if idx >= max_load:
-            break
         if pose['mode'] > max_mode:
             continue
         name = pose["name"]
@@ -483,6 +484,9 @@ def plot_histogram(project_data, max_load, max_mode):
                 if inter_type == "hydrophobic_interaction":
                     print(list(inter))
                 interactions.append([inter_type, *inter])
+        count += 1
+        if count >= max_load:
+            break
     
     interactions = sorted(interactions, key=lambda i: (i[3], i[2], i[0]))
     residues_l = ['%s%s%s' % (i[1], i[2], i[3]) for i in interactions]
@@ -624,11 +628,13 @@ class VinaThreadDialog(QDialog):
 
         # Ok / Cancel buttons
         self.button_box = QDialogButtonBox(
-            QDialogButtonBox.Ok | QDialogButtonBox.Abort, QtCore.Qt.Horizontal, self
+            QDialogButtonBox.Abort, QtCore.Qt.Horizontal, self
         )
         self.layout.addWidget(self.button_box)
-        self.button_box.accepted.connect(self._start)
         self.button_box.rejected.connect(self._abort)
+
+        # Start docking
+        self.vina.start()
 
     def _appendHtml(self, html):
         self.text.moveCursor(QTextCursor.End)
@@ -637,11 +643,6 @@ class VinaThreadDialog(QDialog):
     def _appendCodeHtml(self, html):
         self.text.moveCursor(QTextCursor.End)
         self.text.insertHtml("<pre>" + self._prepareHtml(html) + "</pre>")
-
-    def _start(self):
-        ok_button = self.button_box.button(QDialogButtonBox.Ok)
-        ok_button.setDisabled(True)
-        self.vina.start()
 
     def _abort(self):
         self.vina.terminate()
@@ -691,6 +692,7 @@ class VinaThread(BaseThread):
             seed,
             save_library_check,
             library,
+            scoring_func,
         ) = self.args
 
         #
@@ -741,7 +743,8 @@ class VinaThread(BaseThread):
         if library:
             library_dir = LIBRARIES_DIR + '/' + library
             try:
-                shutil.rmtree(ligands_pdbqt)
+                if os.path.exists(ligands_pdbqt):
+                    shutil.rmtree(ligands_pdbqt)
             except OSError:
                 os.unlink(ligands_pdbqt)
             os.symlink(library_dir, ligands_pdbqt, target_is_directory=True)
@@ -856,7 +859,6 @@ class VinaThread(BaseThread):
         project_data = {}
         project_data.update(
             {
-                "program": "vina",
                 "results_dir": results_dir,
                 "ligands_pdbqt": ligands_pdbqt,
                 "output_dir": output_dir,
@@ -888,6 +890,7 @@ class VinaThread(BaseThread):
 
         base_command = (
             f"vina"
+            f" --scoring {scoring_func}"
             f" --center_x {center_x}"
             f" --center_y {center_y}"
             f" --center_z {center_z}"
@@ -979,6 +982,12 @@ def new_run_docking_widget():
     layout = QFormLayout(widget)
     widget.setLayout(layout)
     dockWidget.setWidget(widget)
+
+    #
+    # Scoring function
+    #
+    scoring_func_combo = QComboBox(widget)
+    scoring_func_combo.addItems(["vina", "vinardo", "ad4"])
 
     #
     # Receptor selection
@@ -1139,7 +1148,6 @@ def new_run_docking_widget():
     tab_idx = 0
     library_combo = QComboBox()
     library_combo.addItems(os.listdir(LIBRARIES_DIR))
-    library_combo.setEditable(True)
     tab2_layout.addRow("Library:", library_combo)
     @tab.currentChanged.connect
     def tab_changed(idx):
@@ -1207,6 +1215,7 @@ def new_run_docking_widget():
             seed_spin.value(),
             save_library_check.isChecked(),
             library,
+            scoring_func_combo.currentText(),
         )
         dialog.exec_()
 
@@ -1217,6 +1226,7 @@ def new_run_docking_widget():
     #
     # setup layout
     #
+    layout.addRow("Scoring function:", scoring_func_combo)
     layout.addRow("Target:", target_sel)
     layout.addRow("Flexible residues:", flex_sel)
     layout.addRow("Box:", box_sel)
@@ -1228,7 +1238,6 @@ def new_run_docking_widget():
     layout.addRow("Energy range:", energy_range_spin)
     layout.addRow("Number of CPUs:", cpu_spin)
     layout.addRow("Seed number:", seed_spin)
-    layout.setWidget(12, QFormLayout.SpanningRole, horizontal_line)
     layout.setWidget(13, QFormLayout.SpanningRole, tab)
     layout.setWidget(14, QFormLayout.SpanningRole, horizontal_line)
     layout.addRow("Output folder:", results_button)
