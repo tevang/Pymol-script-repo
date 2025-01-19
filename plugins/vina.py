@@ -92,6 +92,7 @@ import shlex
 import textwrap
 import subprocess
 import json
+import atexit
 from contextlib import contextmanager
 import tempfile
 from collections import Counter
@@ -155,6 +156,13 @@ LIBRARIES_DIR = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocat
 LIBRARIES_DIR += '/vina-pdbqt-libraries'
 if not os.path.exists(LIBRARIES_DIR):
     os.makedirs(LIBRARIES_DIR)
+
+
+TEMPDIR = tempfile.mkdtemp(prefix='pymol-vina-')
+
+@atexit.register
+def clear_temp():
+    shutil.rmtree(TEMPDIR)
 
 
 def run(command):
@@ -293,29 +301,32 @@ class ResultsWidget(QWidget):
                     idx, QHeaderView.ResizeMode.ResizeToContents
                 )
 
-            @self.itemClicked.connect
-            def itemClicked(item):
-                name = self.item(item.row(), 0).text()
-                mode = self.item(item.row(), 1).text()
-                filename = self.project_data['results_dir'] + f'/output/{name}.out.pdbqt'
-                cmd.delete('Vina.lig')
-                cmd.load(filename, 'Vina.lig', multiplex=True, zoom=False)
-                cmd.set_name(f'Vina.lig_{mode.zfill(4)}', 'Vina.lig')
-                cmd.delete('Vina.lig_*')
-                cmd.alter('Vina.lig', 'chain="Z"')
-                cmd.alter('Vina.lig', 'resn="LIG"')
-                cmd.alter('Vina.lig', 'resi=1')
+            def itemClicked(item, recurse=5):
+                try:
+                    cmd.delete("*")
+                    name = self.item(item.row(), 0).text()
+                    mode = self.item(item.row(), 1).text()
+                    filename = self.project_data['results_dir'] + f'/output/{name}.out.pdbqt'
+                    cmd.load(filename, 'lig', multiplex=True, zoom=False)
+                    cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
+                    cmd.delete('lig_*')
+                    cmd.alter('lig', 'chain="Z"')
+                    cmd.alter('lig', 'resn="LIG"')
+                    cmd.alter('lig', 'resi=1')
 
-                filename = self.project_data['target_pdbqt']
-                cmd.delete('Vina.prot')
-                cmd.load(filename, 'Vina.prot')
+                    filename = self.project_data['target_pdbqt']
+                    cmd.load(filename, 'prot')
                     
-                with tempfile.TemporaryDirectory() as tempdir:
-                    pdb_fname = f"{tempdir}/prot_lig.pdb"
-                    pse_fname = f'{tempdir}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
-                    cmd.save(pdb_fname, selection='Vina.*')
-                    output, success = run(f"plip -f {pdb_fname} -q -s -y --nohydro -o {tempdir}")
-                    cmd.load(pse_fname)
+                    pdb_fname = f"{TEMPDIR}/prot_lig.pdb"
+                    pse_fname = f'{TEMPDIR}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
+                    
+                    cmd.save(pdb_fname, selection='*')
+                    output, success = run(f"plip -f {pdb_fname} -y --nohydro -o {TEMPDIR}")
+                    cmd.load(pse_fname, partial=0)
+                except:
+                    if recurse > 0:
+                        itemClicked(item, recurse=recurse-1)
+            self.itemClicked.connect(itemClicked)
 
 
         def hideEvent(self, evt):
@@ -351,13 +362,12 @@ class ResultsWidget(QWidget):
 
         
     def load_protein(self):
-        cmd.delete('Vina.prot')
+        cmd.delete('prot')
         if self.project_data['flexible']:
             filename = self.project_data['rigid_pdbqt']
         else:
             filename = self.project_data['target_pdbqt']
-        cmd.load(filename, 'Vina.prot')
-        cmd.group('Vina', 'Vina.prot')
+        cmd.load(filename, 'prot')
 
     def showEvent(self, event):
         self.refresh()
@@ -424,70 +434,73 @@ def plot_histogram(project_data, max_load, max_mode):
     )
     results = list(sorted(results, key=lambda r: r['affinity']))
     cmd.set('pdb_conect_all', 'off')
-    cmd.delete('Vina.prot')
+    cmd.delete('prot')
     fname = project_data['target_pdbqt'][:-2]
-    cmd.load(fname, 'Vina.prot')
-    cmd.alter('Vina.prot', "type='ATOM'")
-    with tempfile.TemporaryDirectory() as tempdir:
-        fnames = []
-        for idx, pose in enumerate(results):
-            if idx >= max_load:
-                break
-            if pose['mode'] <= max_mode:
-                name = pose["name"]
-                mode = str(pose["mode"])
-                in_fname = project_data['results_dir'] + f'/output/{name}.out.pdbqt'
-                out_fname = tempdir + f'/{name}_mode{mode}.out.pdb'
-                cmd.delete('Vina.lig')
-                cmd.load(in_fname, 'Vina.lig', multiplex=True, zoom=False)
-                cmd.set_name(f'Vina.lig_{mode.zfill(4)}', 'Vina.lig')
-                cmd.delete('Vina.lig_*')
-                cmd.alter('Vina.lig', 'chain="Z"')
-                cmd.alter('Vina.lig', 'resn="LIG"')
-                cmd.alter('Vina.lig', 'resi=1')
-                cmd.alter('resn LIG', "type='HETATM'")
-                cmd.save(out_fname, selection='Vina.*')
-                fnames.append(out_fname)
-        command = [f"'{fn}'" for fn in fnames]
-        command = f"plip -f {' '.join(command)} -Oqsx --nohydro"
+    cmd.load(fname, 'prot')
+    cmd.alter('prot', "type='ATOM'")
+    fnames = []
+    xml_l = []
+    interactions = []
+    interactions_type = [
+        "hydrophobic_interaction",
+        "hydrogen_bond",
+        "water_bridge",
+        "salt_bridge",
+        "pi_stack",
+        "pi_cation_interaction",
+        "halogen_bond",
+        "metal_complex"
+    ]
+    for idx, pose in enumerate(results):
+        if idx >= max_load:
+            break
+        if pose['mode'] > max_mode:
+            continue
+        name = pose["name"]
+        mode = str(pose["mode"])
+        in_fname = project_data['results_dir'] + f'/output/{name}.out.pdbqt'
+        out_fname = TEMPDIR + f'/{name}_m{mode}.out.pdb'
+        
+        cmd.delete('lig')
+        cmd.load(in_fname, 'lig', multiplex=True, zoom=False)
+        cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
+        cmd.delete('lig_*')
+        cmd.alter('lig', 'chain="Z"')
+        cmd.alter('lig', 'resn="LIG"')
+        cmd.alter('lig', 'resi=1')
+        cmd.alter('lig', "type='HETATM'")
+        cmd.save(out_fname, selection='*')
+        command = f"plip -f '{out_fname}' -Oqsx --nohydro"
         proc = subprocess.run(shlex.split(command), stdout=subprocess.PIPE)
-        output = proc.stdout.decode()
         assert proc.returncode == 0
-        residues = {
-            "hydrophobic_interaction": [],
-            "hydrogen_bond": [],
-            "water_bridge": [],
-            "salt_bridge": [],
-            "pi_stack": [],
-            "pi_cation_interaction": [],
-            "halogen_bond": [],
-            "metal_complex": []
-        }
-        xml_l = output.split("\n\n")
-        for xml in xml_l:
-            if not xml.strip():
-                continue
-            assert xml.startswith("<report>") and xml.endswith("</report>")
-            plip = etree.fromstring(xml)
-            for interaction in residues:
-                restype = plip.xpath(f"//{interaction}/restype/text()")
-                resnr = plip.xpath(f"//{interaction}/resnr/text()")
-                reschain = plip.xpath(f"//{interaction}/reschain/text()")
-                for restype, resnr, reschain in zip(restype, resnr, reschain):
-                    residues[interaction].append((restype, int(resnr), reschain))
-        fig, axs = plt.subplots(len(residues), layout="constrained", sharex=True)
-        for ax, interaction in zip(axs, residues):
-            count = Counter(residues[interaction])
-            count = count.most_common()
-            count = sorted(count, key=lambda c: (c[0][2], c[0][1]))
-            if len(count) > 0:
-                res, count = zip(*count)
-            else:
-                res, count = [], []
-            ax.bar(['%s%s%s' % r for r in res], count)
-            ax.set_title(interaction)
-        plt.xticks(rotation=45)
-        plt.show()
+        output = proc.stdout.decode().strip()
+        plip = etree.fromstring(output)
+        for inter_type in interactions_type:
+            restype = plip.xpath(f"//{inter_type}/restype/text()")
+            resnr = map(int, plip.xpath(f"//{inter_type}/resnr/text()"))
+            reschain = plip.xpath(f"//{inter_type}/reschain/text()")
+            for inter in zip(restype, resnr, reschain):
+                if inter_type == "hydrophobic_interaction":
+                    print(list(inter))
+                interactions.append([inter_type, *inter])
+    
+    interactions = sorted(interactions, key=lambda i: (i[3], i[2], i[0]))
+    residues_l = ['%s%s%s' % (i[1], i[2], i[3]) for i in interactions]
+    interactions_l = [i[0] for i in interactions]
+
+    fig, axs = plt.subplots(len(interactions_type), layout="constrained", sharex=True)
+    for ax, interaction_type in zip(axs, interactions_type):
+        count = {}
+        for res in residues_l:
+            count[res] = 0
+        for res, inter_type in zip(residues_l, interactions_l):
+            if inter_type == interaction_type:
+                count[res] += 1
+        
+        ax.bar(count.keys(), count.values())
+        ax.set_title(interaction_type)
+    plt.xticks(rotation=45)
+    plt.show()
 
 
 def new_load_results_widget():
