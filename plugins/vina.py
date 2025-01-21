@@ -93,6 +93,7 @@ import textwrap
 import subprocess
 import json
 import atexit
+import signal
 from contextlib import contextmanager
 import tempfile
 from collections import Counter
@@ -132,6 +133,7 @@ QTableWidget = Qt.QtWidgets.QTableWidget
 QTableWidgetItem = Qt.QtWidgets.QTableWidgetItem
 QHeaderView = Qt.QtWidgets.QHeaderView
 QFrame = Qt.QtWidgets.QFrame
+QDialogButtonBox = Qt.QtWidgets.QDialogButtonBox
 
 LeftDockWidgetArea = Qt.QtCore.Qt.LeftDockWidgetArea
 QRegExp = Qt.QtCore.QRegExp
@@ -160,10 +162,10 @@ if not os.path.exists(LIBRARIES_DIR):
 
 TEMPDIR = tempfile.mkdtemp(prefix='pymol-vina-')
 
-@atexit.register
 def clear_temp():
     shutil.rmtree(TEMPDIR)
 
+atexit.register(clear_temp)
 
 def run(command):
     ret = subprocess.run(
@@ -286,9 +288,9 @@ def parse_vina_pdbqt(filename):
 class ResultsWidget(QWidget):
 
     class ResultsTableWidget(QTableWidget):
-        def __init__(self, project_data):
+        def __init__(self, project_dir):
             super().__init__()
-            self.project_data = project_data
+            self.project_dir = project_dir
             self.props = ["Name", "Mode", "Affinity"]
 
             self.setSelectionBehavior(QTableWidget.SelectRows)
@@ -301,32 +303,28 @@ class ResultsWidget(QWidget):
                     idx, QHeaderView.ResizeMode.ResizeToContents
                 )
 
-            def itemClicked(item, recurse=5):
-                try:
-                    cmd.delete("*")
-                    name = self.item(item.row(), 0).text()
-                    mode = self.item(item.row(), 1).text()
-                    filename = self.project_data['results_dir'] + f'/output/{name}.out.pdbqt'
-                    cmd.load(filename, 'lig', multiplex=True, zoom=False)
-                    cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
-                    cmd.delete('lig_*')
-                    cmd.alter('lig', 'chain="Z"')
-                    cmd.alter('lig', 'resn="LIG"')
-                    cmd.alter('lig', 'resi=1')
+            @self.itemClicked.connect
+            def itemClicked(item):
+                cmd.delete("*")
+                name = self.item(item.row(), 0).text()
+                mode = self.item(item.row(), 1).text()
+                filename = f'{project_dir}/output/{name}.out.pdbqt'
+                cmd.load(filename, 'lig', multiplex=True, zoom=False)
+                cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
+                cmd.delete('lig_*')
+                cmd.alter('lig', 'chain="Z"')
+                cmd.alter('lig', 'resn="LIG"')
+                cmd.alter('lig', 'resi=1')
 
-                    filename = self.project_data['target_pdbqt']
-                    cmd.load(filename, 'prot')
-                    
-                    pdb_fname = f"{TEMPDIR}/prot_lig.pdb"
-                    pse_fname = f'{TEMPDIR}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
-                    
-                    cmd.save(pdb_fname, selection='*')
-                    output, success = run(f"plip -f {pdb_fname} -y --nohydro -o {TEMPDIR}")
-                    cmd.load(pse_fname, partial=0)
-                except:
-                    if recurse > 0:
-                        itemClicked(item, recurse=recurse-1)
-            self.itemClicked.connect(itemClicked)
+                filename = self.project_dir + '/target.pdbqt'
+                cmd.load(filename, 'prot')
+                
+                pdb_fname = f"{TEMPDIR}/prot_lig.pdb"
+                pse_fname = f'{TEMPDIR}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
+
+                cmd.save(pdb_fname, selection='*')
+                output, success = run(f"plip -f {pdb_fname} -y --nohydro -o {TEMPDIR}")
+                cmd.load(pse_fname, partial=0)
 
 
         def hideEvent(self, evt):
@@ -343,31 +341,21 @@ class ResultsWidget(QWidget):
             except ValueError:
                 return self.text() < other.text()
 
-    def __init__(self, project_data, max_load, max_mode):
+    def __init__(self, project_dir, max_load, max_mode):
         super().__init__()
-        self.project_data = project_data
+        self.project_dir = project_dir
         self.max_load = max_load
         self.max_mode = max_mode
-        self.load_protein()
 
         layout = QVBoxLayout()
         self.setLayout(layout)
 
-        self.table = self.ResultsTableWidget(project_data)
+        self.table = self.ResultsTableWidget(project_dir)
         layout.addWidget(self.table)
 
         export_btn = QPushButton(QIcon("save"), "Export Table")
         export_btn.clicked.connect(self.export)
         layout.addWidget(export_btn)
-
-        
-    def load_protein(self):
-        cmd.delete('prot')
-        if self.project_data['flexible']:
-            filename = self.project_data['rigid_pdbqt']
-        else:
-            filename = self.project_data['target_pdbqt']
-        cmd.load(filename, 'prot')
 
     def showEvent(self, event):
         self.refresh()
@@ -381,9 +369,9 @@ class ResultsWidget(QWidget):
             self.table.removeRow(0)
 
         # append new rows
-        results_dir = self.project_data["results_dir"]
+        project_dir = self.project_dir
         results = itertools.chain.from_iterable(
-            map(parse_vina_pdbqt, glob(f"{results_dir}/output/*.out.pdbqt"))
+            map(parse_vina_pdbqt, glob(f"{self.project_dir}/output/*.out.pdbqt"))
         )
         results = sorted(results, key=itemgetter("affinity"))
         count = 0 
@@ -424,20 +412,19 @@ class ResultsWidget(QWidget):
                         item = self.table.item(row, col)
                         row_data.append(item.text() if item else '')
                     data.append(row_data)
-                title = basename(self.project_data["results_dir"])
+                title = basename(self.project_dir)
                 df = pd.DataFrame(data, columns=['Name', 'Mode', 'Affinity'])
                 df.to_excel(xlsx_writer, sheet_name=title, index=False)
                   
 
-def plot_histogram(project_data, max_load, max_mode):
-    results_dir = project_data["results_dir"]
+def plot_histogram(project_dir, max_load, max_mode):
     results = itertools.chain.from_iterable(
-        map(parse_vina_pdbqt, glob(f"{results_dir}/output/*.out.pdbqt"))
+        map(parse_vina_pdbqt, glob(f"{project_dir}/output/*.out.pdbqt"))
     )
     results = list(sorted(results, key=lambda r: r['affinity']))
     cmd.set('pdb_conect_all', 'off')
     cmd.delete('prot')
-    fname = project_data['target_pdbqt'][:-2]
+    fname = f"{project_dir}/target.pdb"
     cmd.load(fname, 'prot')
     cmd.alter('prot', "type='ATOM'")
     fnames = []
@@ -459,7 +446,7 @@ def plot_histogram(project_data, max_load, max_mode):
             continue
         name = pose["name"]
         mode = str(pose["mode"])
-        in_fname = project_data['results_dir'] + f'/output/{name}.out.pdbqt'
+        in_fname = project_dir + f'/output/{name}.out.pdbqt'
         out_fname = TEMPDIR + f'/{name}_m{mode}.out.pdb'
         
         cmd.delete('lig')
@@ -481,8 +468,6 @@ def plot_histogram(project_data, max_load, max_mode):
             resnr = map(int, plip.xpath(f"//{inter_type}/resnr/text()"))
             reschain = plip.xpath(f"//{inter_type}/reschain/text()")
             for inter in zip(restype, resnr, reschain):
-                if inter_type == "hydrophobic_interaction":
-                    print(list(inter))
                 interactions.append([inter_type, *inter])
         count += 1
         if count >= max_load:
@@ -557,14 +542,15 @@ def new_load_results_widget():
         if not docking_file:
             return
         
-        with open(docking_file, 'r') as file:
-            project_data = json.load(file)
-        
+        # with open(docking_file, 'r') as file:
+        #     project_dir = dirname(json.load(file))
+        project_dir = dirname(docking_file)
+
         if results_widget is not None:
             results_widget.setParent(None)
         del results_widget
         results_widget = ResultsWidget(
-            project_data,
+            project_dir,
             max_load_spin.value(),
             max_mode_spin.value(),
         )
@@ -572,7 +558,7 @@ def new_load_results_widget():
 
         if plot_histogram_check.isChecked():
             plot_histogram(
-                project_data,
+                project_dir,
                 max_load_spin.value(),
                 max_mode_spin.value()
             )
@@ -628,10 +614,12 @@ class VinaThreadDialog(QDialog):
 
         # Ok / Cancel buttons
         self.button_box = QDialogButtonBox(
-            QDialogButtonBox.Abort, QtCore.Qt.Horizontal, self
+            QDialogButtonBox.Ok | QDialogButtonBox.Abort, QtCore.Qt.Horizontal, self
         )
         self.layout.addWidget(self.button_box)
+        self.button_box.accepted.connect(self._done)
         self.button_box.rejected.connect(self._abort)
+        self.button_box.button(QDialogButtonBox.Ok).setDisabled(True)
 
         # Start docking
         self.vina.start()
@@ -655,8 +643,6 @@ class VinaThreadDialog(QDialog):
         ok_button.setDisabled(False)
         abort_button.setDisabled(True)
 
-        self.button_box.accepted.disconnect(self._start)
-
         @self.button_box.accepted.connect
         def _done():
             if success:
@@ -677,7 +663,7 @@ class VinaThreadDialog(QDialog):
 class VinaThread(BaseThread):
     def run(self):
         (
-            results_dir,
+            project_dir,
             ligands_file,
             target_sel,
             flex_sel,
@@ -687,6 +673,7 @@ class VinaThread(BaseThread):
             ph,
             exhaustiveness,
             num_modes,
+            min_rmsd,
             energy_range,
             cpu,
             seed,
@@ -698,19 +685,19 @@ class VinaThread(BaseThread):
         #
         # Check previous output
         #
-        if os.listdir(results_dir):
+        if os.listdir(project_dir):
             self.logEvent.emit(f"""
                 <br/>
                 <font color="red">
-                    <b>The docking folder is not empty: '{results_dir}'</b>
+                    <b>The docking folder is not empty: '{project_dir}'</b>
                 </font>
             """)
 
         #
         # Prepare target
         #
-        target_pdb = f"{results_dir}/target.pdb"
-        target_basename = f"{results_dir}/target"
+        target_pdb = f"{project_dir}/target.pdb"
+        target_basename = f"{project_dir}/target"
         cmd.save(target_pdb, target_sel)
         command = (
             f"mk_prepare_receptor.py --read_pdb '{target_pdb}' -o '{target_basename}' -p"
@@ -738,7 +725,7 @@ class VinaThread(BaseThread):
         #
         # Create library
         #
-        ligands_pdbqt = results_dir + "/ligands_pdbqt"
+        ligands_pdbqt = project_dir + "/ligands_pdbqt"
 
         if library:
             library_dir = LIBRARIES_DIR + '/' + library
@@ -761,7 +748,7 @@ class VinaThread(BaseThread):
             #
             # Scrubbe isomers
             #
-            ligands_sdf = results_dir + "/ligands.sdf"
+            ligands_sdf = project_dir + "/ligands.sdf"
             command = (
                 f"scrub.py -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
             )
@@ -846,7 +833,7 @@ class VinaThread(BaseThread):
         #
         # Create Vina results directory
         #
-        output_dir = f"{results_dir}/output"
+        output_dir = f"{project_dir}/output"
         try:
             os.mkdir(output_dir)
         except FileExistsError:
@@ -855,35 +842,17 @@ class VinaThread(BaseThread):
         #
         # Project data
         #
-        project_file = results_dir + "/docking.json"
-        project_data = {}
-        project_data.update(
-            {
-                "results_dir": results_dir,
-                "ligands_pdbqt": ligands_pdbqt,
-                "output_dir": output_dir,
-                "size_x": size_x,
-                "size_y": size_y,
-                "size_z": size_z,
-                "center_x": center_x,
-                "center_y": center_y,
-                "center_z": center_z,
-            }
-        )
-        if flex_sel == "":
-            project_data.update(
-                {
-                    "flexible": False,
-                    "target_pdbqt": f"{target_basename}.pdbqt"}
-            )
-        else:
-            project_data.update(
-                {
-                    "flexible": True,
-                    "rigid_pdbqt": f"{target_basename}_rigid.pdbqt",
-                    "flex_pdbqt": f"{target_basename}_flex.pdbqt",
-                }
-            )
+        project_file = project_dir + "/docking.json"
+        project_data = {
+            "scoring_func": scoring_func,
+            "size_x": size_x,
+            "size_y": size_y,
+            "size_z": size_z,
+            "center_x": center_x,
+            "center_y": center_y,
+            "center_z": center_z,
+        }
+
         #
         # Prompt for user confirmation
         #
@@ -901,6 +870,7 @@ class VinaThread(BaseThread):
             f" --seed {seed}"
             f" --exhaustiveness {exhaustiveness}"
             f" --num_modes {num_modes}"
+            f" --min_rmsd {min_rmsd}"
             f" --energy_range {energy_range}"
         )
         self.logEvent.emit(
@@ -922,12 +892,12 @@ class VinaThread(BaseThread):
                 f" --ligand '{ligand_pdbqt}'"
                 f" --out '{output_pdbqt}'"
             )
-            if project_data["flexible"]:
-                rigid_pdbqt = project_data["rigid_pdbqt"]
-                flex_pdbqt = project_data["flex_pdbqt"]
+            if os.path.exists(f"{project_dir}/flexible.pdbqt"):
+                rigid_pdbqt = f"{project_dir}/rigid.pdbqt"
+                flex_pdbqt = f"{project_dir}/flexible.pdbqt"
                 command += f' --receptor "{rigid_pdbqt}"' f' --flex "{flex_pdbqt}"'
             else:
-                target_pdbqt = project_data["target_pdbqt"]
+                target_pdbqt = f"{project_dir}/target.pdbqt"
                 command += f' --receptor "{target_pdbqt}"'
 
             output, success = run(command)
@@ -968,7 +938,8 @@ class VinaThread(BaseThread):
         else:
             self.logEvent.emit(f"{summary}")
 
-        with open(results_dir + f"/docking.json", "w") as docking_file:
+        project_file = f"{project_dir}/docking.json"
+        with open(project_file, "w") as docking_file:
             json.dump(project_data, docking_file, indent=4)
         self.done.emit(True)
 
@@ -1094,6 +1065,10 @@ def new_run_docking_widget():
     num_modes_spin.setRange(1, 20)
     num_modes_spin.setValue(9)
 
+    min_rmsd_spin = QDoubleSpinBox(widget)
+    min_rmsd_spin.setRange(0.0, 3.0)
+    min_rmsd_spin.setValue(1.0)
+
     energy_range_spin = QDoubleSpinBox(widget)
     energy_range_spin.setRange(1.0, 10.0)
     energy_range_spin.setValue(3.0)
@@ -1119,14 +1094,14 @@ def new_run_docking_widget():
     #
     ligands_file = None
     ligands_button = QPushButton("Choose file...", widget)
-    tab1_layout.addRow("Ligand SMILES:", ligands_button)
+    tab1_layout.addRow("Ligand file:", ligands_button)
 
     @ligands_button.clicked.connect
     def choose_ligands():
         nonlocal ligands_file
         ligands_file = str(
             QFileDialog.getOpenFileName(
-                ligands_button, "Ligand files", expanduser("~"), "SMILES (*.smi *.txt)"
+                ligands_button, "Ligand files", expanduser("~"), "SMILES (*.smi);;SDF (*.sdf);;MOL (*.mol *.mol2)"
             )[0]
         )
         if not ligands_file:
@@ -1160,13 +1135,13 @@ def new_run_docking_widget():
     #
     # Choose output folder
     #
-    results_dir = None
+    project_dir = None
     results_button = QPushButton("Choose folder...", widget)
 
     @results_button.clicked.connect
-    def choose_results_dir():
-        nonlocal results_dir
-        results_dir = str(
+    def choose_project_dir():
+        nonlocal project_dir
+        project_dir = str(
             QFileDialog.getExistingDirectory(
                 results_button,
                 "Output folder",
@@ -1174,9 +1149,9 @@ def new_run_docking_widget():
                 QFileDialog.ShowDirsOnly,
             )
         )
-        if not results_dir:
+        if not project_dir:
             return
-        results_button.setText(basename(results_dir))
+        results_button.setText(basename(project_dir))
 
     #
     # Run button
@@ -1187,7 +1162,7 @@ def new_run_docking_widget():
     def run():
         if not (validate_target_sel() & validate_flex_sel() & validate_box_sel()):
             return
-        if not (results_dir):
+        if not (project_dir):
             return
         nonlocal ligands_file
         library = library_combo.currentText().strip()
@@ -1200,7 +1175,7 @@ def new_run_docking_widget():
                 return
             ligands_file = None
         dialog = VinaThreadDialog(
-            results_dir,
+            project_dir,
             ligands_file,
             target_sel.text(),
             flex_sel.text(),
@@ -1210,6 +1185,7 @@ def new_run_docking_widget():
             ph_spin.value(),
             exhaustiveness_spin.value(),
             num_modes_spin.value(),
+            min_rmsd_spin.value(),
             energy_range_spin.value(),
             cpu_spin.value(),
             seed_spin.value(),
@@ -1231,15 +1207,16 @@ def new_run_docking_widget():
     layout.addRow("Flexible residues:", flex_sel)
     layout.addRow("Box:", box_sel)
     layout.addRow("Box margin:", box_margin_spin)
-    layout.addRow("Allow errors:", allow_errors_check)
+    layout.addRow("Allow Meeko errors:", allow_errors_check)
     layout.addRow("Ligand pH:", ph_spin)
     layout.addRow("Exhaustiveness:", exhaustiveness_spin)
     layout.addRow("Number of modes:", num_modes_spin)
+    layout.addRow("Minimum RMSD:", min_rmsd_spin)
     layout.addRow("Energy range:", energy_range_spin)
     layout.addRow("Number of CPUs:", cpu_spin)
     layout.addRow("Seed number:", seed_spin)
-    layout.setWidget(13, QFormLayout.SpanningRole, tab)
-    layout.setWidget(14, QFormLayout.SpanningRole, horizontal_line)
+    layout.setWidget(14, QFormLayout.SpanningRole, tab)
+    layout.setWidget(15, QFormLayout.SpanningRole, horizontal_line)
     layout.addRow("Output folder:", results_button)
     layout.addWidget(button)
     widget.setLayout(layout)
@@ -1268,7 +1245,6 @@ def __init_plugin__(app=None):
     from pymol.plugins import addmenuitemqt
     addmenuitemqt("Vina (Run)", show_run_widget)
     addmenuitemqt("Vina (Analyze)", show_load_widget)
-
 
 
 if __name__ in ["pymol", "pmg_tk.startup.XDrugPy"]:
