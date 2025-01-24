@@ -19,27 +19,8 @@
 import subprocess
 import shutil
 
-if (
-    not shutil.which("mk_prepare_receptor.py")
-    or not shutil.which("mk_prepare_ligand.py")
-    or not shutil.which("vina")
-    or not shutil.which("plip")
-):
-    subprocess.check_call(
-        [
-            "conda",
-            "install",
-            "-y",
-            "-c",
-            "conda-forge",
-            "meeko",
-            # "vina",
-            "plip",
-
-        ],
-    )
 try:
-    import lxml, matplotlib, pandas, scipy, sklearn
+    import lxml, matplotlib, pandas, scipy, meeko, plip
 except ImportError:
     subprocess.check_call(
         [
@@ -53,24 +34,8 @@ except ImportError:
             "pandas",
             "openpyxl",
             "scipy",
-            "scikit-learn"
-        ],
-    )
-
-
-#
-# SETUP PIP PACKAGES
-#
-
-if not shutil.which('scrub.py'):
-    subprocess.check_call(
-        [
-            "python",
-            "-m",
-            "pip",
-            "--disable-pip-version-check",
-            "install",
-            "https://github.com/forlilab/scrubber/archive/refs/heads/develop.zip",
+            "meeko",
+            "plip",
         ],
     )
 
@@ -114,6 +79,35 @@ if not os.path.exists(vina_bin):
 
 
 #
+# SETUP PIP PACKAGES
+#
+
+from zipfile import ZipFile
+from os import path
+import urllib.request
+
+scrub_script = f'{data_dir}/scrubber/molscrub-0.1.1/scripts/scrub.py'
+if not path.exists(scrub_script):
+    zipfile = "%s/scrubber.zip" % data_dir
+
+    url = "https://github.com/forlilab/molscrub/archive/refs/tags/0.1.1.zip"
+    urllib.request.urlretrieve(url, zipfile)
+    
+    subprocess.check_call(
+        [
+            "python",
+            "-m",
+            "pip",
+            "--disable-pip-version-check",
+            "install",
+            zipfile
+        ]
+    )
+    with ZipFile(f"{data_dir}/scrubber.zip","r") as zip_ref:
+        zip_ref.extractall(f"{data_dir}/scrubber")
+    
+
+#
 # CODE STARTS HERE
 #
 
@@ -137,6 +131,7 @@ import signal
 from contextlib import contextmanager
 import tempfile
 from collections import Counter, OrderedDict
+from pprint import pprint
 
 import pymol
 import pymol.gui
@@ -523,7 +518,7 @@ def plot_results(project_dir, max_load, max_mode):
             resnr = map(int, plip.xpath(f"//{inter_type}/resnr/text()"))
             reschain = plip.xpath(f"//{inter_type}/reschain/text()")
             for inter in zip(restype, resnr, reschain):
-                interactions.append([f'{name}({mode})', inter_type, *inter])
+                interactions.append([f'{name}_m{mode}', inter_type, *inter])
         count += 1
         if count >= max_load:
             break
@@ -565,6 +560,8 @@ def plot_results(project_dir, max_load, max_mode):
             for res in cur_residues['residue']:
                 counter[res] += 1
             mols.append([counter[r] for r in residues_l])
+            print(cur_name, end='=')
+            pprint({k:v for k,v in counter.items()})
             labels.append(cur_name)
     
     D = []
@@ -572,10 +569,18 @@ def plot_results(project_dir, max_load, max_mode):
         for idx2, mol2 in enumerate(mols):
             if idx1 >= idx2:
                 continue
-            d = euclidean(mol1, mol2)
+            d = euclidean(mol1, mol2) + 0.05
             D.append(d)
     Z = linkage(D)
-    dendrogram(Z, labels=labels, orientation='right', color_threshold=0, ax=ax)
+    dendrogram(
+        Z,
+        labels=labels,
+        orientation='right',
+        color_threshold=0,
+        distance_sort=True,
+        ax=ax
+    )
+    ax.set_xlim(0)
     plt.show()
 
 
@@ -787,7 +792,7 @@ class VinaThread(BaseThread):
         target_basename = f"{project_dir}/target"
         cmd.save(target_pdb, target_sel)
         command = (
-            f"mk_prepare_receptor.py --read_pdb '{target_pdb}' -o '{target_basename}' -p"
+            f"python -m meeko.cli.mk_prepare_receptor --read_pdb '{target_pdb}' -o '{target_basename}' -p"
         )
         if allow_errors:
             command = f"{command} -a"
@@ -837,7 +842,7 @@ class VinaThread(BaseThread):
             #
             ligands_sdf = project_dir + "/ligands.sdf"
             command = (
-                f"scrub.py -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
+                f"python {scrub_script} -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
             )
             self.logEvent.emit(
                 f"""
@@ -857,7 +862,7 @@ class VinaThread(BaseThread):
             # Convert into PDBQT
             #
             command = (
-                f"mk_prepare_ligand.py -i '{ligands_sdf}' --multimol_outdir '{ligands_pdbqt}'"
+                f"python -m meeko.cli.mk_prepare_ligand -i '{ligands_sdf}' --multimol_outdir '{ligands_pdbqt}'"
             )
             self.logEvent.emit(f"""
                 <br/>
