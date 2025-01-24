@@ -1,12 +1,12 @@
 """
     = vina.py =
 
-    This plugin enables small scale virtual screening with the AutoDock Vina
-    software stack. It uses Meeko and Scrubber to prepare molecular ligands,
-    and PLIP to analyze the results.
+    This plugin enables virtual screening with the AutoDock Vina software stack.
+    It uses Meeko and Scrubber to prepare molecular ligands, and PLIP to
+    analyze the results.
     
-    It was tested on PyMOL 3.0 with Python 3.10. Currently supports only
-    Linux and probably Mac.
+    It was tested on PyMOL 3.1 with Python 3.10. Currently supports only Linux
+    and probably Mac.
 
     @author Pedro Sousa Lacerda
     @email pslacerda@gmail.com
@@ -14,10 +14,53 @@
 
 
 #
-# SETUP PIP PACKAGES
+# SETUP CONDA PACKAGES
 #
 import subprocess
 import shutil
+
+if (
+    not shutil.which("mk_prepare_receptor.py")
+    or not shutil.which("mk_prepare_ligand.py")
+    or not shutil.which("vina")
+    or not shutil.which("plip")
+):
+    subprocess.check_call(
+        [
+            "conda",
+            "install",
+            "-y",
+            "-c",
+            "conda-forge",
+            "meeko",
+            # "vina",
+            "plip",
+
+        ],
+    )
+try:
+    import lxml, matplotlib, pandas, scipy, sklearn
+except ImportError:
+    subprocess.check_call(
+        [
+            "conda",
+            "install",
+            "-y",
+            "-c",
+            "conda-forge",
+            "lxml",
+            "matplotlib",
+            "pandas",
+            "openpyxl",
+            "scipy",
+            "scikit-learn"
+        ],
+    )
+
+
+#
+# SETUP PIP PACKAGES
+#
 
 if not shutil.which('scrub.py'):
     subprocess.check_call(
@@ -33,44 +76,41 @@ if not shutil.which('scrub.py'):
 
 
 #
-# SETUP CONDA PACKAGES
+# SETUP VINA
 #
-if (
-    not shutil.which("mk_prepare_receptor.py")
-    or not shutil.which("mk_prepare_ligand.py")
-    or not shutil.which("scrub.py")
-    or not shutil.which("vina")
-    or not shutil.which("plip")
-):
-    subprocess.check_call(
-        [
-            "conda",
-            "install",
-            "-y",
-            "-c",
-            "conda-forge",
-            "meeko",
-            "vina",
-            "plip",
 
-        ],
-    )
-try:
-    import lxml, matplotlib, pandas
-except ImportError:
-    subprocess.check_call(
-        [
-            "conda",
-            "install",
-            "-y",
-            "-c",
-            "conda-forge",
-            "lxml",
-            "matplotlib"
-            "pandas",
-            "openpyxl"
-        ],
-    )
+import platform
+import subprocess
+import sys
+import os.path
+from pymol import Qt
+
+QStandardPaths = Qt.QtCore.QStandardPaths
+data_dir = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+if not os.path.exists(data_dir):
+    os.makedirs(data_dir)
+
+system = platform.system().lower()
+match system:
+    case "windows":
+        bin_fname = "vina_1.2.5_win.exe"
+    case "linux":
+        bin_fname = "vina_1.2.5_linux_x86_64"
+    case "darwin":
+        bin_fname = "vina_1.2.5_mac_x86_64"
+vina_url = f"https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/{bin_fname}"
+vina_bin = f"{data_dir}/vina"
+if system == "windows":
+    vina_bin += ".exe"
+
+if not os.path.exists(vina_bin):
+    import os
+    import stat
+    from urllib.request import urlretrieve
+    print(f'Downloading "{vina_url}"')
+    print(f'Installing Vina on "{vina_bin}"')
+    urlretrieve(vina_url, vina_bin)
+    os.chmod(vina_bin, stat.S_IEXEC)
 
 
 #
@@ -96,7 +136,7 @@ import atexit
 import signal
 from contextlib import contextmanager
 import tempfile
-from collections import Counter
+from collections import Counter, OrderedDict
 
 import pymol
 import pymol.gui
@@ -107,7 +147,8 @@ import numpy as np
 import pandas as pd
 from lxml import etree
 from matplotlib import pyplot as plt
-
+from scipy.cluster.hierarchy import linkage, dendrogram
+from scipy.spatial.distance import euclidean
 
 QWidget = Qt.QtWidgets.QWidget
 QFileDialog = Qt.QtWidgets.QFileDialog
@@ -258,6 +299,20 @@ def display_box(name, max_coords, min_coords):
     axes = [[2.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, 2.0]]
     cmd.load_cgo(obj, name)
     cmd.set_view(view)
+
+
+
+class OrderedCounter(Counter, OrderedDict):
+    '''
+    Counter that remembers the order elements are first encountered
+    https://stackoverflow.com/a/23747652/199332
+    '''
+    def __repr__(self):
+        return '%s(%r)' % (self.__class__.__name__, OrderedDict(self))
+
+    def __reduce__(self):
+        return self.__class__, (OrderedDict(self),)
+
 
 
 ###############################################
@@ -417,7 +472,7 @@ class ResultsWidget(QWidget):
                 df.to_excel(xlsx_writer, sheet_name=title, index=False)
                   
 
-def plot_histogram(project_dir, max_load, max_mode):
+def plot_results(project_dir, max_load, max_mode):
     results = itertools.chain.from_iterable(
         map(parse_vina_pdbqt, glob(f"{project_dir}/output/*.out.pdbqt"))
     )
@@ -468,14 +523,15 @@ def plot_histogram(project_dir, max_load, max_mode):
             resnr = map(int, plip.xpath(f"//{inter_type}/resnr/text()"))
             reschain = plip.xpath(f"//{inter_type}/reschain/text()")
             for inter in zip(restype, resnr, reschain):
-                interactions.append([inter_type, *inter])
+                interactions.append([f'{name}({mode})', inter_type, *inter])
         count += 1
         if count >= max_load:
             break
     
-    interactions = sorted(interactions, key=lambda i: (i[3], i[2], i[0]))
-    residues_l = ['%s%s%s' % (i[1], i[2], i[3]) for i in interactions]
-    interactions_l = [i[0] for i in interactions]
+    interactions = sorted(interactions, key=lambda i: (i[4], i[3], i[1]))
+    residues_l = ['%s%s%s' % (i[2], i[3], i[4]) for i in interactions]
+    interactions_l = [i[1] for i in interactions]
+    names_l = [i[0] for i in interactions]
 
     fig, axs = plt.subplots(len(interactions_type), layout="constrained", sharex=True)
     for ax, interaction_type in zip(axs, interactions_type):
@@ -489,6 +545,37 @@ def plot_histogram(project_dir, max_load, max_mode):
         ax.bar(count.keys(), count.values())
         ax.set_title(interaction_type)
     plt.xticks(rotation=45)
+    plt.show()
+
+    fig, ax = plt.subplots(layout="constrained")
+    df = pd.DataFrame({
+        'name': names_l,
+        'residue': residues_l
+    })
+    residues_l = list({r: None for r in residues_l})
+    labels = []
+    mols = []
+    prev_name = None
+    for cur_name, cur_residues in df.groupby('name'):
+        if cur_name != prev_name:
+            prev_name = cur_name
+            counter = OrderedCounter(residues_l)
+            for res in counter:
+                counter[res] = 0
+            for res in cur_residues['residue']:
+                counter[res] += 1
+            mols.append([counter[r] for r in residues_l])
+            labels.append(cur_name)
+    
+    D = []
+    for idx1, mol1 in enumerate(mols):
+        for idx2, mol2 in enumerate(mols):
+            if idx1 >= idx2:
+                continue
+            d = euclidean(mol1, mol2)
+            D.append(d)
+    Z = linkage(D)
+    dendrogram(Z, labels=labels, orientation='right', color_threshold=0, ax=ax)
     plt.show()
 
 
@@ -520,8 +607,8 @@ def new_load_results_widget():
     #
     # Plot interaction histogram
     #
-    plot_histogram_check = QCheckBox()
-    plot_histogram_check.setChecked(False)
+    plot_results_check = QCheckBox()
+    plot_results_check.setChecked(False)
 
     #
     # Choose output folder
@@ -556,8 +643,8 @@ def new_load_results_widget():
         )
         layout.setWidget(5, QFormLayout.SpanningRole, results_widget)
 
-        if plot_histogram_check.isChecked():
-            plot_histogram(
+        if plot_results_check.isChecked():
+            plot_results(
                 project_dir,
                 max_load_spin.value(),
                 max_mode_spin.value()
@@ -572,7 +659,7 @@ def new_load_results_widget():
     #
     layout.addRow("Max load:", max_load_spin)
     layout.addRow("Max mode:", max_mode_spin)
-    layout.addRow("Plot histogram:", plot_histogram_check)
+    layout.addRow("Plot histogram:", plot_results_check)
     layout.setWidget(4, QFormLayout.SpanningRole, show_table_button)
     widget.setLayout(layout)
 
@@ -858,7 +945,7 @@ class VinaThread(BaseThread):
         #
 
         base_command = (
-            f"vina"
+            f"{vina_bin}"
             f" --scoring {scoring_func}"
             f" --center_x {center_x}"
             f" --center_y {center_y}"
