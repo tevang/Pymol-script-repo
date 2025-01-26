@@ -79,20 +79,12 @@ if not os.path.exists(vina_bin):
 
 
 #
-# SETUP PIP PACKAGES
+# SETUP PIP
 #
 
-from zipfile import ZipFile
-from os import path
-import urllib.request
-
-scrub_script = f'{data_dir}/scrubber/molscrub-0.1.1/scripts/scrub.py'
-if not path.exists(scrub_script):
-    zipfile = "%s/scrubber.zip" % data_dir
-
-    url = "https://github.com/forlilab/molscrub/archive/refs/tags/0.1.1.zip"
-    urllib.request.urlretrieve(url, zipfile)
-    
+try:
+    import scrubber
+except ImportError:
     subprocess.check_call(
         [
             "python",
@@ -100,12 +92,10 @@ if not path.exists(scrub_script):
             "pip",
             "--disable-pip-version-check",
             "install",
-            zipfile
+            "https://github.com/forlilab/molscrub/archive/refs/tags/0.1.1.zip"
         ]
     )
-    with ZipFile(f"{data_dir}/scrubber.zip","r") as zip_ref:
-        zip_ref.extractall(f"{data_dir}/scrubber")
-    
+
 
 #
 # CODE STARTS HERE
@@ -170,6 +160,7 @@ QTableWidgetItem = Qt.QtWidgets.QTableWidgetItem
 QHeaderView = Qt.QtWidgets.QHeaderView
 QFrame = Qt.QtWidgets.QFrame
 QDialogButtonBox = Qt.QtWidgets.QDialogButtonBox
+QTreeView = Qt.QtWidgets.QTreeView
 
 LeftDockWidgetArea = Qt.QtCore.Qt.LeftDockWidgetArea
 QRegExp = Qt.QtCore.QRegExp
@@ -184,6 +175,8 @@ QTextDocument = Qt.QtGui.QTextDocument
 QIntValidator = Qt.QtGui.QIntValidator
 QTextCursor = Qt.QtGui.QTextCursor
 QIcon = Qt.QtGui.QIcon
+QStandardItem = Qt.QtGui.QStandardItem
+QStandardItemModel = Qt.QtGui.QStandardItemModel
 
 
 ###############################################
@@ -314,6 +307,11 @@ class OrderedCounter(Counter, OrderedDict):
 #          Load Result Pannel                 #
 ###############################################
 
+class TreeItem(QStandardItem):
+    def __init__(self, obj):
+        super().__init__(str(obj))
+        self.setFlags(self.flags() & ~QtCore.Qt.ItemIsEditable)
+
 
 def parse_vina_pdbqt(filename):
     name = basename(filename)
@@ -334,140 +332,33 @@ def parse_vina_pdbqt(filename):
                     "mode": mode
                 }
 
+def load_plip_pose(project_dir, name, mode):
+    cmd.delete("*")
+    filename = f'{project_dir}/output/{name}.out.pdbqt'
 
-class ResultsWidget(QWidget):
+    cmd.load(filename, 'lig', multiplex=True, zoom=False)
+    cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
+    cmd.delete('lig_*')
+    cmd.alter('lig', 'chain="Z"')
+    cmd.alter('lig', 'resn="LIG"')
+    cmd.alter('lig', 'resi=1')
 
-    class ResultsTableWidget(QTableWidget):
-        def __init__(self, project_dir):
-            super().__init__()
-            self.project_dir = project_dir
-            self.props = ["Name", "Mode", "Affinity"]
+    filename = project_dir + '/target.pdbqt'
+    cmd.load(filename, 'prot')
 
-            self.setSelectionBehavior(QTableWidget.SelectRows)
-            self.setSelectionMode(QTableWidget.SingleSelection)
-            self.setColumnCount(3)
-            self.setHorizontalHeaderLabels(self.props)
-            header = self.horizontalHeader()
-            for idx in range(len(self.props)):
-                header.setSectionResizeMode(
-                    idx, QHeaderView.ResizeMode.ResizeToContents
-                )
+    pdb_fname = f"{TEMPDIR}/prot_lig.pdb"
+    pse_fname = f'{TEMPDIR}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
 
-            @self.itemClicked.connect
-            def itemClicked(item):
-                cmd.delete("*")
-                name = self.item(item.row(), 0).text()
-                mode = self.item(item.row(), 1).text()
-                filename = f'{project_dir}/output/{name}.out.pdbqt'
-                cmd.load(filename, 'lig', multiplex=True, zoom=False)
-                cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
-                cmd.delete('lig_*')
-                cmd.alter('lig', 'chain="Z"')
-                cmd.alter('lig', 'resn="LIG"')
-                cmd.alter('lig', 'resi=1')
-
-                filename = self.project_dir + '/target.pdbqt'
-                cmd.load(filename, 'prot')
-                
-                pdb_fname = f"{TEMPDIR}/prot_lig.pdb"
-                pse_fname = f'{TEMPDIR}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
-
-                cmd.save(pdb_fname, selection='*')
-                output, success = run(f"plip -f {pdb_fname} -y --nohydro -o {TEMPDIR}")
-                cmd.load(pse_fname, partial=0)
+    cmd.save(pdb_fname, selection='*')
+    command = f"conda run --cwd {TEMPDIR} plip -f {pdb_fname} -y --nohydro -o {TEMPDIR}"
+    output, success = run(command)
+    if not success:
+        raise Exception(f"Failed to run PLIP: {command}")
+    cmd.load(pse_fname)
 
 
-        def hideEvent(self, evt):
-            self.clearSelection()
-    
-    class SortableItem(QTableWidgetItem):
-        def __init__(self, obj):
-            super().__init__(str(obj))
-            self.setFlags(self.flags() & ~QtCore.Qt.ItemIsEditable)
 
-        def __lt__(self, other):
-            try:
-                return float(self.text()) < float(other.text())
-            except ValueError:
-                return self.text() < other.text()
-
-    def __init__(self, project_dir, max_load, max_mode):
-        super().__init__()
-        self.project_dir = project_dir
-        self.max_load = max_load
-        self.max_mode = max_mode
-
-        layout = QVBoxLayout()
-        self.setLayout(layout)
-
-        self.table = self.ResultsTableWidget(project_dir)
-        layout.addWidget(self.table)
-
-        export_btn = QPushButton(QIcon("save"), "Export Table")
-        export_btn.clicked.connect(self.export)
-        layout.addWidget(export_btn)
-
-    def showEvent(self, event):
-        self.refresh()
-        super().showEvent(event)
-
-    def refresh(self):
-        self.table.setSortingEnabled(False)
-
-        # remove old rows
-        while self.table.rowCount() > 0:
-            self.table.removeRow(0)
-
-        # append new rows
-        project_dir = self.project_dir
-        results = itertools.chain.from_iterable(
-            map(parse_vina_pdbqt, glob(f"{self.project_dir}/output/*.out.pdbqt"))
-        )
-        results = sorted(results, key=itemgetter("affinity"))
-        count = 0 
-        for idx, pose in enumerate(results):
-            if pose['mode'] <= self.max_mode:
-                self.appendRow(pose)
-                count += 1
-            if count >= self.max_load:
-                break
-
-        self.table.setSortingEnabled(True)
-
-    def appendRow(self, pose):
-        self.table.insertRow(self.table.rowCount())
-        line = self.table.rowCount() - 1
-
-        self.table.setItem(line, 0, self.SortableItem(pose['name']))
-        self.table.setItem(line, 1, self.SortableItem(pose['mode']))
-        self.table.setItem(line, 2, self.SortableItem(pose['affinity']))
-        
-    def export(self):
-        fileDialog = QFileDialog()
-        fileDialog.setNameFilter("Excel file (*.xlsx)")
-        fileDialog.setViewMode(QFileDialog.Detail)
-        fileDialog.setAcceptMode(QFileDialog.AcceptSave)
-        fileDialog.setDefaultSuffix(".xlsx")
-
-        if fileDialog.exec_():
-            filename = fileDialog.selectedFiles()[0]
-            ext = os.path.splitext(filename)[1]
-            with pd.ExcelWriter(filename) as xlsx_writer:
-                row_count = self.table.rowCount()
-                col_count = self.table.columnCount()
-                data = []
-                for row in range(row_count):
-                    row_data = []
-                    for col in range(col_count):
-                        item = self.table.item(row, col)
-                        row_data.append(item.text() if item else '')
-                    data.append(row_data)
-                title = basename(self.project_dir)
-                df = pd.DataFrame(data, columns=['Name', 'Mode', 'Affinity'])
-                df.to_excel(xlsx_writer, sheet_name=title, index=False)
-                  
-
-def plot_results(project_dir, max_load, max_mode):
+def load_plip_full(project_dir, max_load, max_mode, tree_model):
     results = itertools.chain.from_iterable(
         map(parse_vina_pdbqt, glob(f"{project_dir}/output/*.out.pdbqt"))
     )
@@ -508,7 +399,7 @@ def plot_results(project_dir, max_load, max_mode):
         cmd.alter('lig', 'resi=1')
         cmd.alter('lig', "type='HETATM'")
         cmd.save(out_fname, selection='*')
-        command = f"plip -f '{out_fname}' -Oqsx --nohydro"
+        command = f"conda run --cwd {TEMPDIR} plip -f '{out_fname}' -Oqsx --nohydro"
         proc = subprocess.run(shlex.split(command), stdout=subprocess.PIPE)
         assert proc.returncode == 0
         output = proc.stdout.decode().strip()
@@ -536,7 +427,6 @@ def plot_results(project_dir, max_load, max_mode):
         for res, inter_type in zip(residues_l, interactions_l):
             if inter_type == interaction_type:
                 count[res] += 1
-        
         ax.bar(count.keys(), count.values())
         ax.set_title(interaction_type)
     plt.xticks(rotation=45)
@@ -551,6 +441,7 @@ def plot_results(project_dir, max_load, max_mode):
     labels = []
     mols = []
     prev_name = None
+    
     for cur_name, cur_residues in df.groupby('name'):
         if cur_name != prev_name:
             prev_name = cur_name
@@ -560,8 +451,18 @@ def plot_results(project_dir, max_load, max_mode):
             for res in cur_residues['residue']:
                 counter[res] += 1
             mols.append([counter[r] for r in residues_l])
-            print(cur_name, end='=')
-            pprint({k:v for k,v in counter.items()})
+            mol_item = TreeItem(cur_name)
+            tree_model.appendRow(mol_item)
+            for res, count in counter.items():
+                if count > 0:
+                    resn = res[:3]
+                    chain = res[-1:]
+                    resi = res[3:-1]
+                    mol_item.appendRow([
+                        TreeItem(chain),
+                        TreeItem(resi),
+                        TreeItem(resn),
+                    ])
             labels.append(cur_name)
     
     D = []
@@ -583,6 +484,141 @@ def plot_results(project_dir, max_load, max_mode):
     ax.set_xlim(0)
     plt.show()
 
+
+class ResultsWidget(QWidget):
+
+    class ResultsTableWidget(QTableWidget):
+        def __init__(self, project_dir):
+            super().__init__()
+            self.project_dir = project_dir
+            self.props = ["Name", "Mode", "Affinity"]
+
+            self.setSelectionBehavior(QTableWidget.SelectRows)
+            self.setSelectionMode(QTableWidget.SingleSelection)
+            self.setColumnCount(3)
+            self.setHorizontalHeaderLabels(self.props)
+            header = self.horizontalHeader()
+            for idx in range(len(self.props)):
+                header.setSectionResizeMode(
+                    idx, QHeaderView.ResizeMode.ResizeToContents
+                )
+
+            @self.itemClicked.connect
+            def itemClicked(item):
+                name = self.item(item.row(), 0).text()
+                mode = self.item(item.row(), 1).text()
+                load_plip_pose(project_dir, name, mode)
+        
+    class SortableItem(QTableWidgetItem):
+        def __init__(self, obj):
+            super().__init__(str(obj))
+            self.setFlags(self.flags() & ~QtCore.Qt.ItemIsEditable)
+
+        def __lt__(self, other):
+            try:
+                return float(self.text()) < float(other.text())
+            except ValueError:
+                return self.text() < other.text()
+
+    def __init__(self, is_intensive, project_dir, max_load, max_mode):
+        super().__init__()
+        self.is_intensive = is_intensive
+        self.project_dir = project_dir
+        self.max_load = max_load
+        self.max_mode = max_mode
+
+        layout = QVBoxLayout()
+        self.setLayout(layout)
+
+        tab = QTabWidget()
+        layout.addWidget(tab)
+
+        tab1_widget = QWidget()
+        tab1_layout = QVBoxLayout(tab1_widget)
+        tab1_widget.setLayout(tab1_layout)
+        tab.addTab(tab1_widget, "Affinity list")
+
+        self.table_widget = self.ResultsTableWidget(project_dir)
+        tab1_layout.addWidget(self.table_widget)
+        
+        export_btn = QPushButton(QIcon("save"), "Export Table")
+        export_btn.clicked.connect(self.export)
+        tab1_layout.addWidget(export_btn)
+
+        tab2_widget = QWidget()
+        tab2_layout = QVBoxLayout(tab2_widget)
+        tab2_widget.setLayout(tab2_layout)
+        tab.addTab(tab2_widget, "Residue tree")
+        
+        self.tree_model = QStandardItemModel()
+        self.tree_model.setHorizontalHeaderLabels(["Molecule/Chain", "Resi", "Resn"])
+        self.tree_widget = QTreeView()
+        self.tree_widget.setModel(self.tree_model)
+        tab2_layout.addWidget(self.tree_widget) 
+        
+    def showEvent(self, event):
+        self.refresh()
+        super().showEvent(event)
+
+    def refresh(self):
+        self.table_widget.setSortingEnabled(False)
+
+        # remove old rows
+        while self.table_widget.rowCount() > 0:
+            self.table_widget.removeRow(0)
+
+        # append new rows
+        project_dir = self.project_dir
+        results = itertools.chain.from_iterable(
+            map(parse_vina_pdbqt, glob(f"{self.project_dir}/output/*.out.pdbqt"))
+        )
+        results = sorted(results, key=itemgetter("affinity"))
+        count = 0 
+        for idx, pose in enumerate(results):
+            if pose['mode'] <= self.max_mode:
+                self.appendRow(pose)
+                count += 1
+            if count >= self.max_load:
+                break
+        self.table_widget.setSortingEnabled(True)
+
+        if self.is_intensive:
+            load_plip_full(self.project_dir, self.max_load, self.max_mode, self.tree_model)
+
+
+
+    def appendRow(self, pose):
+        self.table_widget.insertRow(self.table_widget.rowCount())
+        line = self.table_widget.rowCount() - 1
+
+        self.table_widget.setItem(line, 0, self.SortableItem(pose['name']))
+        self.table_widget.setItem(line, 1, self.SortableItem(pose['mode']))
+        self.table_widget.setItem(line, 2, self.SortableItem(pose['affinity']))
+        
+    def export(self):
+        fileDialog = QFileDialog()
+        fileDialog.setNameFilter("Excel file (*.xlsx)")
+        fileDialog.setViewMode(QFileDialog.Detail)
+        fileDialog.setAcceptMode(QFileDialog.AcceptSave)
+        fileDialog.setDefaultSuffix(".xlsx")
+
+        if fileDialog.exec_():
+            filename = fileDialog.selectedFiles()[0]
+            ext = os.path.splitext(filename)[1]
+            with pd.ExcelWriter(filename) as xlsx_writer:
+                row_count = self.table_widget.rowCount()
+                col_count = self.table_widget.columnCount()
+                data = []
+                for row in range(row_count):
+                    row_data = []
+                    for col in range(col_count):
+                        item = self.table_widget.item(row, col)
+                        row_data.append(item.text() if item else '')
+                    data.append(row_data)
+                title = basename(self.project_dir)
+                df = pd.DataFrame(data, columns=['Name', 'Mode', 'Affinity'])
+                df.to_excel(xlsx_writer, sheet_name=title, index=False)
+                  
 
 def new_load_results_widget():
     dockWidget = QDockWidget()
@@ -612,8 +648,8 @@ def new_load_results_widget():
     #
     # Plot interaction histogram
     #
-    plot_results_check = QCheckBox()
-    plot_results_check.setChecked(False)
+    intensive_check = QCheckBox()
+    intensive_check.setChecked(False)
 
     #
     # Choose output folder
@@ -634,26 +670,19 @@ def new_load_results_widget():
         if not docking_file:
             return
         
-        # with open(docking_file, 'r') as file:
-        #     project_dir = dirname(json.load(file))
         project_dir = dirname(docking_file)
 
         if results_widget is not None:
             results_widget.setParent(None)
         del results_widget
         results_widget = ResultsWidget(
+            intensive_check.isChecked(),
             project_dir,
             max_load_spin.value(),
             max_mode_spin.value(),
         )
         layout.setWidget(5, QFormLayout.SpanningRole, results_widget)
 
-        if plot_results_check.isChecked():
-            plot_results(
-                project_dir,
-                max_load_spin.value(),
-                max_mode_spin.value()
-            )
     #
     # Results Table
     #
@@ -664,7 +693,7 @@ def new_load_results_widget():
     #
     layout.addRow("Max load:", max_load_spin)
     layout.addRow("Max mode:", max_mode_spin)
-    layout.addRow("Plot histogram:", plot_results_check)
+    layout.addRow("Intensive:", intensive_check)
     layout.setWidget(4, QFormLayout.SpanningRole, show_table_button)
     widget.setLayout(layout)
 
@@ -792,7 +821,7 @@ class VinaThread(BaseThread):
         target_basename = f"{project_dir}/target"
         cmd.save(target_pdb, target_sel)
         command = (
-            f"python -m meeko.cli.mk_prepare_receptor --read_pdb '{target_pdb}' -o '{target_basename}' -p"
+            f"conda run mk_prepare_receptor.py --read_pdb '{target_pdb}' -o '{target_basename}' -p"
         )
         if allow_errors:
             command = f"{command} -a"
@@ -842,7 +871,7 @@ class VinaThread(BaseThread):
             #
             ligands_sdf = project_dir + "/ligands.sdf"
             command = (
-                f"python {scrub_script} -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
+                f"conda run scrub.py -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
             )
             self.logEvent.emit(
                 f"""
@@ -862,7 +891,7 @@ class VinaThread(BaseThread):
             # Convert into PDBQT
             #
             command = (
-                f"python -m meeko.cli.mk_prepare_ligand -i '{ligands_sdf}' --multimol_outdir '{ligands_pdbqt}'"
+                f"conda run mk_prepare_ligand.py -i '{ligands_sdf}' --multimol_outdir '{ligands_pdbqt}'"
             )
             self.logEvent.emit(f"""
                 <br/>
@@ -971,6 +1000,9 @@ class VinaThread(BaseThread):
             <b>Vina base command:</b> {base_command}
         """
         )
+        project_file = f"{project_dir}/docking.json"
+        with open(project_file, "w") as docking_file:
+            json.dump(project_data, docking_file, indent=4)
 
         fail_count = 0
         for idx, ligand_pdbqt in enumerate(glob(f"{ligands_pdbqt}/*.pdbqt")):
@@ -1030,9 +1062,6 @@ class VinaThread(BaseThread):
         else:
             self.logEvent.emit(f"{summary}")
 
-        project_file = f"{project_dir}/docking.json"
-        with open(project_file, "w") as docking_file:
-            json.dump(project_data, docking_file, indent=4)
         self.done.emit(True)
 
 
@@ -1050,7 +1079,7 @@ def new_run_docking_widget():
     # Scoring function
     #
     scoring_func_combo = QComboBox(widget)
-    scoring_func_combo.addItems(["vina", "vinardo", "ad4"])
+    scoring_func_combo.addItems(["vina", "vinardo"])
 
     #
     # Receptor selection
