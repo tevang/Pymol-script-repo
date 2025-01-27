@@ -462,6 +462,7 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
                         TreeItem(chain),
                         TreeItem(resi),
                         TreeItem(resn),
+                        TreeItem(str(count))
                     ])
             labels.append(cur_name)
     
@@ -551,7 +552,7 @@ class ResultsWidget(QWidget):
         tab.addTab(tab2_widget, "Residue tree")
         
         self.tree_model = QStandardItemModel()
-        self.tree_model.setHorizontalHeaderLabels(["Molecule/Chain", "Resi", "Resn"])
+        self.tree_model.setHorizontalHeaderLabels(["Molecule/Chain", "Resi", "Resn", "Count"])
         self.tree_widget = QTreeView()
         self.tree_widget.setModel(self.tree_model)
         tab2_layout.addWidget(self.tree_widget) 
@@ -1064,6 +1065,24 @@ class VinaThread(BaseThread):
 
         self.done.emit(True)
 
+class PyMOLComboObjectBox(QComboBox):
+
+    def __init__(self, sele):
+        super().__init__()
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.sele = sele
+        self.setEditText("")
+
+    def showPopup(self):
+        currentText = self.currentText().strip()
+        objects = cmd.get_object_list(self.sele)
+        self.clear()
+        self.addItems(objects)
+        if currentText != "":
+            self.setCurrentText(currentText)
+        super().showPopup()
+
 
 def new_run_docking_widget():
     dockWidget = QDockWidget()
@@ -1084,19 +1103,19 @@ def new_run_docking_widget():
     #
     # Receptor selection
     #
-    target_sel = QLineEdit("", widget)
+    target_sel = PyMOLComboObjectBox("polymer")
 
-    @target_sel.textEdited.connect
+    @target_sel.currentTextChanged.connect
     def validate(text):
         validate_target_sel()
 
     def validate_target_sel():
-        text = target_sel.text()
+        text = target_sel.currentText()
         palette = QApplication.palette(target_sel)
         palette.setColor(QPalette.Base, QtCore.Qt.white)
         valid = True
         try:
-            if cmd.count_atoms(f"{text}") == 0:
+            if cmd.count_atoms(f"({text}) and polymer") == 0:
                 raise
         except:
             palette.setColor(QPalette.Base, QtCore.Qt.red)
@@ -1118,30 +1137,29 @@ def new_run_docking_widget():
         palette = QApplication.palette(flex_sel)
         palette.setColor(QPalette.Base, QtCore.Qt.white)
         valid = True
-
-        if text.strip() == "":
-            palette.setColor(QPalette.Base, QtCore.Qt.white)
-            return True
-        try:
-            if cmd.count_atoms(f"({text}) and ({target_sel.text()})") == 0:
-                raise
-            palette.setColor(QPalette.Base, QtCore.Qt.white)
-            valid = True
-        except:
-            palette.setColor(QPalette.Base, QtCore.Qt.red)
-            valid = False
+        if text.strip() != "":
+            try:
+                if cmd.count_atoms(f"({text}) and polymer") == 0:
+                    raise
+                palette.setColor(QPalette.Base, QtCore.Qt.white)
+                valid = True
+            except:
+                palette.setColor(QPalette.Base, QtCore.Qt.red)
+                valid = False
         flex_sel.setPalette(palette)
         return valid
 
     #
     # Box selection
     #
-    box_sel = QLineEdit("", widget)
-    @box_sel.textEdited.connect
+    box_sel = PyMOLComboObjectBox("polymer")
+
+    @box_sel.currentTextChanged.connect
     def validate(text):
         validate_box_sel()
+
     def validate_box_sel():
-        text = box_sel.text()
+        text = box_sel.currentText()
         palette = QApplication.palette(box_sel)
         palette.setColor(QPalette.Base, QtCore.Qt.white)
         try:
