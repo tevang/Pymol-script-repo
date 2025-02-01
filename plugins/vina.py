@@ -951,9 +951,6 @@ class VinaThread(BaseThread):
             )
             output, success = run(command)
             self.logCodeEvent.emit(output)
-            if not success:
-                self.done.emit(False)
-                return
 
             if save_library_check:
                 library_dir = os.path.splitext(basename(ligands_file))[0]
