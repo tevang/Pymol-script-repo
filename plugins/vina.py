@@ -2,8 +2,8 @@
     = vina.py =
 
     This plugin enables virtual screening with the AutoDock Vina software stack.
-    It uses Meeko and Scrubber to prepare molecular ligands, and PLIP to
-    analyze the results.
+    It uses OpenBabel and Meeko to prepare molecular ligands, and PLIP and
+    Matplotlib to analyze the results.
     
     It was tested on PyMOL 3.1 with Python 3.10. Currently supports only Linux
     and probably Mac.
@@ -12,51 +12,120 @@
     @email pslacerda@gmail.com
 """
 
-
-#
-# SETUP CONDA PACKAGES
-#
+import logging
+import logging.handlers
+import platform
 import subprocess
+import sys
+from os import path
+from pymol import Qt
+import os
 import shutil
+import stat
+import atexit
+import shlex
+from urllib.request import urlretrieve
+from glob import glob
+from tempfile import mkdtemp
+from pymol import Qt
 
+
+#
+# GENERIC RESOURCE FOLDER
+#
+QStandardPaths = Qt.QtCore.QStandardPaths
+RESOURCES_DIR = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
+if not path.exists(RESOURCES_DIR):
+    os.makedirs(RESOURCES_DIR)
+
+
+#
+# CONFIGURING LOGGER
+#
+LOG = logging.getLogger("XDrugPy")
+LOG.setLevel(logging.DEBUG)
+log_file = f"{RESOURCES_DIR}/vina-py.log"
+if not LOG.hasHandlers():
+    console_handler = logging.StreamHandler()
+    rotating_handler = logging.handlers.RotatingFileHandler(
+        log_file,
+        maxBytes=2000,
+        backupCount=5
+    )
+    LOG.addHandler(console_handler)
+    LOG.addHandler(rotating_handler,)
+    fmt = logging.Formatter('%(asctime)s [%(levelname)s] [%(filename)s:%(lineno)d] %(name)s: %(message)s')
+    console_handler.setFormatter(fmt)
+    rotating_handler.setFormatter(fmt)
+LOG.debug(f'Logging to "{log_file}')
+
+
+#
+# UTILITY TO START PROCESSES
+#
+def run(command, log=True, cwd=None):
+    if log:
+        LOG.info(f'Running subprocess: {command}')
+    ret = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=cwd,
+        shell=True,
+        env=os.environ
+    )
+    output = ret.stdout.decode(errors='replace')
+    success = ret.returncode == 0
+    if log:
+        LOG.debug(f'Subprocess retcode {ret.returncode}.')
+    return output, success
+
+
+#
+# USER STORED COMPOUND LIBRARY DIRECTORIES
+#
+COMPOUNDS_LIBRARIES_DIR = f'{RESOURCES_DIR}/vina_compound_libraries'
+if not path.exists(COMPOUNDS_LIBRARIES_DIR):
+    LOG.info(f"Creating '{COMPOUNDS_LIBRARIES_DIR}'")
+    os.makedirs(COMPOUNDS_LIBRARIES_DIR)
+else:
+    LOG.info(f"Using '{COMPOUNDS_LIBRARIES_DIR}'.")
+
+
+#
+# TEMPORARY DIRECTORY
+#
+TEMP_DIR = mkdtemp(prefix='pymol-vina-')
+LOG.info(f"Create temporary dir '{TEMP_DIR}'")
+def clear_temp():
+    LOG.info(f"Deleting temporary '{TEMP_DIR}'")
+    shutil.rmtree(TEMP_DIR)
+atexit.register(clear_temp)
+
+
+#
+# INSTALL PACKAGES
+#
 try:
-    import lxml, matplotlib, pandas, scipy, meeko, plip
+    import pandas
 except ImportError:
-    subprocess.check_call(
-        [
-            "conda",
-            "install",
-            "-y",
-            "-c",
-            "conda-forge",
-            "lxml",
-            "matplotlib",
-            "pandas",
-            "openpyxl",
-            "scipy",
-            "meeko",
-            "plip",
-        ],
+    run(
+        f"pip install pandas"
+    )
+try:
+    import lxml, matplotlib, openpyxl, scipy, meeko, plip, openbabel
+except ImportError:
+    run(
+        f"conda install -y"
+        f" lxml matplotlib openpyxl scipy meeko plip openbabel"
     )
 
 
 #
 # SETUP VINA
 #
-
-import platform
-import subprocess
-import sys
-import os.path
-from pymol import Qt
-
-QStandardPaths = Qt.QtCore.QStandardPaths
-data_dir = QStandardPaths.writableLocation(QStandardPaths.AppLocalDataLocation)
-if not os.path.exists(data_dir):
-    os.makedirs(data_dir)
-
-system = platform.system().lower()
-match system:
+SYSTEM = platform.system().lower()
+match SYSTEM:
     case "windows":
         bin_fname = "vina_1.2.5_win.exe"
     case "linux":
@@ -64,37 +133,14 @@ match system:
     case "darwin":
         bin_fname = "vina_1.2.5_mac_x86_64"
 vina_url = f"https://github.com/ccsb-scripps/AutoDock-Vina/releases/download/v1.2.5/{bin_fname}"
-vina_bin = f"{data_dir}/vina"
-if system == "windows":
-    vina_bin += ".exe"
+VINA_BIN = f"{RESOURCES_DIR}/vina"
+if SYSTEM == "windows":
+    VINA_BIN += ".exe"
+if not path.exists(VINA_BIN):
+    LOG.info(f"Downloading and installing '{VINA_BIN}' from '{vina_url}'")
+    urlretrieve(vina_url, VINA_BIN)
+    os.chmod(VINA_BIN, stat.S_IEXEC)
 
-if not os.path.exists(vina_bin):
-    import os
-    import stat
-    from urllib.request import urlretrieve
-    print(f'Downloading "{vina_url}"')
-    print(f'Installing Vina on "{vina_bin}"')
-    urlretrieve(vina_url, vina_bin)
-    os.chmod(vina_bin, stat.S_IEXEC)
-
-
-#
-# SETUP PIP
-#
-
-try:
-    import scrubber
-except ImportError:
-    subprocess.check_call(
-        [
-            "python",
-            "-m",
-            "pip",
-            "--disable-pip-version-check",
-            "install",
-            "https://github.com/forlilab/molscrub/archive/refs/tags/0.1.1.zip"
-        ]
-    )
 
 
 #
@@ -195,14 +241,6 @@ def clear_temp():
     shutil.rmtree(TEMPDIR)
 
 atexit.register(clear_temp)
-
-def run(command):
-    ret = subprocess.run(
-        shlex.split(command), stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-    )
-    output = ret.stdout.decode()
-    success = ret.returncode == 0
-    return output, success
 
 
 class BaseThread(QThread):
@@ -332,30 +370,30 @@ def parse_vina_pdbqt(filename):
                     "mode": mode
                 }
 
-def load_plip_pose(project_dir, name, mode):
-    cmd.delete("*")
-    filename = f'{project_dir}/output/{name}.out.pdbqt'
 
-    cmd.load(filename, 'lig', multiplex=True, zoom=False)
+def load_plip_pose(project_dir, name, mode):
+    pdb_fname = TEMPDIR + '/plip.pdb'
+    pse_fname = TEMPDIR + '/PLIP_PROTEIN_LIG_Z_1.pse'
+    prot_fname = os.path.expanduser(project_dir + '/target.pdb')
+
+    cmd.delete("*")
+    pose_fname = f'{project_dir}/output/{name}.out.pdbqt'
+    cmd.load(pose_fname, 'lig', multiplex=True, zoom=False)
+    cmd.split_states('*')
     cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
     cmd.delete('lig_*')
     cmd.alter('lig', 'chain="Z"')
     cmd.alter('lig', 'resn="LIG"')
     cmd.alter('lig', 'resi=1')
-
-    filename = project_dir + '/target.pdbqt'
-    cmd.load(filename, 'prot')
-
-    pdb_fname = f"{TEMPDIR}/prot_lig.pdb"
-    pse_fname = f'{TEMPDIR}/PROT_LIG_PROTEIN_LIG_Z_1.pse'
-
-    cmd.save(pdb_fname, selection='*')
-    command = f"conda run --cwd {TEMPDIR} plip -f {pdb_fname} -y --nohydro -o {TEMPDIR}"
-    output, success = run(command)
+    
+    cmd.load(prot_fname, 'prot')
+    cmd.save(pdb_fname)
+    
+    command = f'python -m plip.plipcmd -qs -f "{pdb_fname}" -yx -o "{TEMPDIR}"'
+    output, success = run(command, cwd=TEMPDIR)
     if not success:
-        raise Exception(f"Failed to run PLIP: {command}")
+        LOG.error(output)
     cmd.load(pse_fname)
-
 
 
 def load_plip_full(project_dir, max_load, max_mode, tree_model):
@@ -389,7 +427,6 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
         mode = str(pose["mode"])
         in_fname = project_dir + f'/output/{name}.out.pdbqt'
         out_fname = TEMPDIR + f'/{name}_m{mode}.out.pdb'
-        
         cmd.delete('lig')
         cmd.load(in_fname, 'lig', multiplex=True, zoom=False)
         cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
@@ -399,11 +436,11 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
         cmd.alter('lig', 'resi=1')
         cmd.alter('lig', "type='HETATM'")
         cmd.save(out_fname, selection='*')
-        command = f"conda run --cwd {TEMPDIR} plip -f '{out_fname}' -Oqsx --nohydro"
-        proc = subprocess.run(shlex.split(command), stdout=subprocess.PIPE)
-        assert proc.returncode == 0
-        output = proc.stdout.decode().strip()
-        plip = etree.fromstring(output)
+        command = f"python -m plip.plipcmd -v -f '{out_fname}' -qsx --nohydro -o {TEMPDIR}"
+        LOG.info(f"Obtaining XML from PLIP: {command}")
+        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=TEMPDIR, shell=True)
+        with open(TEMPDIR + '/report.xml') as fp:
+            plip = etree.parse(fp)
         for inter_type in interactions_type:
             restype = plip.xpath(f"//{inter_type}/restype/text()")
             resnr = map(int, plip.xpath(f"//{inter_type}/resnr/text()"))
@@ -569,9 +606,9 @@ class ResultsWidget(QWidget):
             self.table_widget.removeRow(0)
 
         # append new rows
-        project_dir = self.project_dir
+        project_dir = os.path.expanduser(self.project_dir)
         results = itertools.chain.from_iterable(
-            map(parse_vina_pdbqt, glob(f"{self.project_dir}/output/*.out.pdbqt"))
+            map(parse_vina_pdbqt, glob(f"{project_dir}/output/*.out.pdbqt"))
         )
         results = sorted(results, key=itemgetter("affinity"))
         count = 0 
@@ -584,9 +621,7 @@ class ResultsWidget(QWidget):
         self.table_widget.setSortingEnabled(True)
 
         if self.is_intensive:
-            load_plip_full(self.project_dir, self.max_load, self.max_mode, self.tree_model)
-
-
+            load_plip_full(project_dir, self.max_load, self.max_mode, self.tree_model)
 
     def appendRow(self, pose):
         self.table_widget.insertRow(self.table_widget.rowCount())
@@ -819,10 +854,10 @@ class VinaThread(BaseThread):
         # Prepare target
         #
         target_pdb = f"{project_dir}/target.pdb"
-        target_basename = f"{project_dir}/target"
+        target_pdbqt = f"{project_dir}/target.pdbqt"
         cmd.save(target_pdb, target_sel)
         command = (
-            f"conda run mk_prepare_receptor.py --read_pdb '{target_pdb}' -o '{target_basename}' -p"
+            f'python -m meeko.cli.mk_prepare_receptor --read_pdb "{target_pdb}" -p "{target_pdbqt}"'
         )
         if allow_errors:
             command = f"{command} -a"
@@ -847,37 +882,69 @@ class VinaThread(BaseThread):
         #
         # Create library
         #
-        ligands_pdbqt = project_dir + "/ligands_pdbqt"
+        ligands_pdbqt_dir = project_dir + "/output"
 
         if library:
             library_dir = LIBRARIES_DIR + '/' + library
             try:
-                if os.path.exists(ligands_pdbqt):
-                    shutil.rmtree(ligands_pdbqt)
+                if os.path.exists(ligands_pdbqt_dir):
+                    shutil.rmtree(ligands_pdbqt_dir)
             except OSError:
-                os.unlink(ligands_pdbqt)
-            os.symlink(library_dir, ligands_pdbqt, target_is_directory=True)
+                os.unlink(ligands_pdbqt_dir)
+            os.symlink(library_dir, ligands_pdbqt_dir, target_is_directory=True)
             self.logEvent.emit(f"""
                 <br/>
                 <br/><b>Using stored library:</b> {library_dir}
             """)
         elif ligands_file:
-            if os.path.exists(ligands_pdbqt):
+            if os.path.exists(ligands_pdbqt_dir):
                 try:
-                    shutil.rmtree(ligands_pdbqt)
+                    shutil.rmtree(ligands_pdbqt_dir)
                 except OSError:
-                    os.unlink(ligands_pdbqt)
+                    os.unlink(ligands_pdbqt_dir)
+            
             #
-            # Scrubbe isomers
+            # Generate coordinates
             #
+
+            if SYSTEM == "windows":
+                obabel = '"%s/Library/bin/obabel.exe"' % sys.prefix
+                os.environ['BABEL_DATADIR'] = '%s/share/openbabel' % sys.prefix
+            else:
+                obabel = 'obabel'
             ligands_sdf = project_dir + "/ligands.sdf"
             command = (
-                f"conda run scrub.py -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
+                f'{obabel} "{ligands_file}" -p {ph} --gen3d -opdbqt -osdf -O "{ligands_sdf}"'
             )
             self.logEvent.emit(
                 f"""
                     <br/>
-                    <br/><b>Scrubbing ligands.</b>
+                    <br/><b>Generating 3D coordinates of ligands.</b>
+                    <br/><b>Command:</b> {command}
+                    <br/>
+                """
+            )
+            output, success = run(command)
+            if "BABEL_DATADIR" in os.environ:
+                del os.environ["BABEL_DATADIR"]
+            
+            self.logCodeEvent.emit(output)
+            if not success:
+                self.done.emit(False)
+                return
+
+            #
+            # Converting to PDBQT
+            #
+            if not os.path.exists(ligands_pdbqt_dir):
+                os.makedirs(ligands_pdbqt_dir)
+            command = (
+                f'python -m meeko.cli.mk_prepare_ligand -i "{ligands_sdf}" --multimol_outdir "{ligands_pdbqt_dir}"'
+            )
+            self.logEvent.emit(
+                f"""
+                    <br/>
+                    <br/><b>Converting ligands to PDBQT.</b>
                     <br/><b>Command:</b> {command}
                     <br/>
                 """
@@ -888,41 +955,23 @@ class VinaThread(BaseThread):
                 self.done.emit(False)
                 return
 
-            #
-            # Convert into PDBQT
-            #
-            command = (
-                f"conda run mk_prepare_ligand.py -i '{ligands_sdf}' --multimol_outdir '{ligands_pdbqt}'"
-            )
-            self.logEvent.emit(f"""
-                <br/>
-                <br/><b>Converting ligands to PDBQT.</b>
-                <br/><b>Command:</b> {command}
-                <br/>
-            """)
-            output, success = run(command)
-            self.logCodeEvent.emit(output)
-            if not success:
-                self.done.emit(False)
-                return
-            
             if save_library_check:
                 library_dir = os.path.splitext(basename(ligands_file))[0]
                 library_dir = LIBRARIES_DIR + '/' + library_dir
                 self.logEvent.emit(f"""
                     <br/>
-                    <br/><b>Storing library at:</b> {library_dir}
+                    <br/><b>Storing compound library at:</b> {library_dir}
                 """)
                 try:
                     shutil.rmtree(library_dir)
                 except:
                     pass
-                shutil.copytree(ligands_pdbqt, library_dir)
+                shutil.copytree(ligands_pdbqt_dir, library_dir)
         
         #
         # The number of dockings to do
         #
-        count = len(glob(f"{ligands_pdbqt}/*.pdbqt"))
+        count = len(glob(f"{ligands_pdbqt_dir}/*.pdbqt"))
         n_ligands = count
         self.numSteps.emit(n_ligands)
 
@@ -980,7 +1029,7 @@ class VinaThread(BaseThread):
         #
 
         base_command = (
-            f"{vina_bin}"
+            f"{VINA_BIN}"
             f" --scoring {scoring_func}"
             f" --center_x {center_x}"
             f" --center_y {center_y}"
@@ -1006,7 +1055,7 @@ class VinaThread(BaseThread):
             json.dump(project_data, docking_file, indent=4)
 
         fail_count = 0
-        for idx, ligand_pdbqt in enumerate(glob(f"{ligands_pdbqt}/*.pdbqt")):
+        for idx, ligand_pdbqt in enumerate(glob(f"{ligands_pdbqt_dir}/*.pdbqt")):
             name, _ = splitext(basename(ligand_pdbqt))
             output_pdbqt = f"{output_dir}/{name}.out.pdbqt"
             if os.path.exists(output_pdbqt):
@@ -1014,8 +1063,8 @@ class VinaThread(BaseThread):
                 continue
 
             command = base_command + (
-                f" --ligand '{ligand_pdbqt}'"
-                f" --out '{output_pdbqt}'"
+                f' --ligand "{ligand_pdbqt}"'
+                f' --out "{output_pdbqt}"'
             )
             if os.path.exists(f"{project_dir}/flexible.pdbqt"):
                 rigid_pdbqt = f"{project_dir}/rigid.pdbqt"
@@ -1185,7 +1234,7 @@ def new_run_docking_widget():
     @box_margin_spin.valueChanged.connect
     def display_box(margin):
         cmd.delete("box")
-        display_box_sel("box", box_sel.text(), margin)
+        display_box_sel("box", box_sel.currentText(), margin)
 
     allow_errors_check = QCheckBox(widget)
     allow_errors_check.setChecked(False)
@@ -1316,9 +1365,9 @@ def new_run_docking_widget():
         dialog = VinaThreadDialog(
             project_dir,
             ligands_file,
-            target_sel.text(),
+            target_sel.currentText(),
             flex_sel.text(),
-            box_sel.text(),
+            box_sel.currentText(),
             box_margin_spin.value(),
             allow_errors_check.isChecked(),
             ph_spin.value(),
