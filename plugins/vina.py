@@ -137,7 +137,7 @@ if system == "windows":
     vina_exe += ".exe"
 if not exists(vina_exe):
     logger.info(f"Installing '{vina_exe}' from '{vina_url}'")
-    urlretrieve(vina_url, VINA_BIN)
+    urlretrieve(vina_url, vina_exe)
     os.chmod(vina_exe, stat.S_IEXEC)
 if system == "windows":
     os.environ['PATH'] = "%s;%s" % (RESOURCES_DIR, os.environ['PATH'])
