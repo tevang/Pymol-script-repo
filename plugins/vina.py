@@ -2,7 +2,7 @@
     = vina.py =
 
     This plugin enables virtual screening with the AutoDock Vina software stack.
-    It uses OpenBabel and Meeko to prepare molecular ligands, and PLIP and
+    It uses MOlscrub and Meeko to prepare molecular ligands, and PLIP and
     Matplotlib to analyze the results.
     
     It was tested on PyMOL 3.1 with Python 3.10. Currently supports only Linux
@@ -60,7 +60,7 @@ atexit.register(clear_temp)
 
 
 #
-# CONFIGURING loggerGER
+# Configuring logger
 #
 logger = logging.getLogger("RunVina")
 logger.setLevel(logging.DEBUG)
@@ -107,18 +107,18 @@ def run(command, log=True, cwd=None):
 try:
     import pandas
 except ImportError:
-    run(f"pip install pandas"
-    )
+    run("pip install pandas")
 try:
-    import lxml, matplotlib, openpyxl, scipy, meeko, plip, openbabel
+    import lxml, matplotlib, openpyxl, scipy, meeko, plip, openbabel, rdkit
     if not (shutil.which("qvina2") or shutil.which("qvinaw")):
         raise ImportError
 except ImportError:
     run(
-        f"conda install -y"
-        f" lxml matplotlib openpyxl scipy meeko plip openbabel qvina"
+        "conda install -y"
+        " lxml matplotlib openpyxl scipy meeko plip openbabel qvina rdkit"
     )
-
+if not shutil.which("scrub.py"):
+    run("pip install molscrub")
 
 #
 # SInstall Vina
@@ -437,7 +437,7 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
     poses = list(sorted(poses, key=lambda p: p['affinity']))
     cmd.set('pdb_conect_all', 'off')
     cmd.delete('prot')
-    fname = f"{project_dir}/target.pdb"
+    fname = f"{project_dir}/receptor.pdb"
     cmd.load(fname, 'prot')
     cmd.alter('prot', "type='ATOM'")
     fnames = []
@@ -596,7 +596,7 @@ class ResultsWidget(QWidget):
             def itemClicked(item):
                 name = self.item(item.row(), 0).text()
                 mode = self.item(item.row(), 1).text()
-                receptor_pdbqt = '%s/target.pdbqt' % self.project_dir
+                receptor_pdbqt = '%s/receptor.pdbqt' % self.project_dir
                 ligand_pdbqt = f'{self.project_dir}/output/{name}.out.pdbqt'
                 load_plip_pose(receptor_pdbqt, ligand_pdbqt, mode)
         
@@ -875,7 +875,7 @@ class VinaThread(BaseThread):
         (
             project_dir,
             ligands_file,
-            target_sel,
+            receptor_sel,
             flex_sel,
             box_sel,
             box_margin,
@@ -904,13 +904,13 @@ class VinaThread(BaseThread):
             """)
 
         #
-        # Prepare target
+        # Prepare receptor
         #
-        target_pdb = f"{project_dir}/target.pdb"
-        target_pdbqt = f"{project_dir}/target.pdbqt"
-        cmd.save(target_pdb, target_sel)
+        receptor_pdb = f"{project_dir}/receptor.pdb"
+        receptor_pdbqt = f"{project_dir}/receptor.pdbqt"
+        cmd.save(receptor_pdb, receptor_sel)
         command = (
-            f'python -m meeko.cli.mk_prepare_receptor --read_pdb "{target_pdb}" -p "{target_pdbqt}"'
+            f'python -m meeko.cli.mk_prepare_receptor --read_pdb "{receptor_pdb}" -p "{receptor_pdbqt}"'
         )
         if allow_errors:
             command = f"{command} -a"
@@ -922,7 +922,7 @@ class VinaThread(BaseThread):
             command = f"{command} -f {flex_residues}"
         self.logEvent.emit(f"""
             <br/>
-            <br/><b>Preparing target.</b>
+            <br/><b>Preparing receptor.</b>
             <br/><b>Command:</b> {command}
             <br/>
         """)
@@ -944,7 +944,7 @@ class VinaThread(BaseThread):
                     shutil.rmtree(ligands_pdbqt_dir)
             except OSError:
                 os.unlink(ligands_pdbqt_dir)
-            os.symlink(library_dir, ligands_pdbqt_dir, target_is_directory=True)
+            os.symlink(library_dir, ligands_pdbqt_dir, receptor_is_directory=True)
             self.logEvent.emit(f"""
                 <br/>
                 <br/><b>Using stored library:</b> {library_dir}
@@ -957,34 +957,26 @@ class VinaThread(BaseThread):
                     os.unlink(ligands_pdbqt_dir)
             
             #
-            # Generate coordinates
+            # Scrubbe isomers
             #
-
-            if system == "windows":
-                obabel = '"%s/Library/bin/obabel.exe"' % sys.prefix
-                os.environ['BABEL_DATADIR'] = '%s/share/openbabel' % sys.prefix
-            else:
-                obabel = 'obabel'
             ligands_sdf = project_dir + "/ligands.sdf"
             command = (
-                f'{obabel} "{ligands_file}" -p {ph} --gen3d -opdbqt -osdf -O "{ligands_sdf}"'
+                f"python -m scrubber.main -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
             )
             self.logEvent.emit(
                 f"""
                     <br/>
-                    <br/><b>Generating 3D coordinates of ligands.</b>
+                    <br/><b>Scrubbing ligands.</b>
                     <br/><b>Command:</b> {command}
                     <br/>
                 """
             )
             output, success = run(command)
-            if "BABEL_DATADIR" in os.environ:
-                del os.environ["BABEL_DATADIR"]
-            
             self.logCodeEvent.emit(output)
             if not success:
                 self.done.emit(False)
                 return
+
 
             #
             # Converting to PDBQT
@@ -1121,8 +1113,8 @@ class VinaThread(BaseThread):
                 flex_pdbqt = f"{project_dir}/flexible.pdbqt"
                 command += f' --receptor "{rigid_pdbqt}"' f' --flex "{flex_pdbqt}"'
             else:
-                target_pdbqt = f"{project_dir}/target.pdbqt"
-                command += f' --receptor "{target_pdbqt}"'
+                receptor_pdbqt = f"{project_dir}/receptor.pdbqt"
+                command += f' --receptor "{receptor_pdbqt}"'
 
             output, success = run(command)
             self.currentStep.emit(idx + 1)
@@ -1202,15 +1194,15 @@ def new_run_docking_widget():
     #
     # Receptor selection
     #
-    target_sel = PyMOLComboObjectBox("polymer")
+    receptor_sel = PyMOLComboObjectBox("polymer")
 
-    @target_sel.currentTextChanged.connect
+    @receptor_sel.currentTextChanged.connect
     def validate(text):
-        validate_target_sel()
+        validate_receptor_sel()
 
-    def validate_target_sel():
-        text = target_sel.currentText()
-        palette = QApplication.palette(target_sel)
+    def validate_receptor_sel():
+        text = receptor_sel.currentText()
+        palette = QApplication.palette(receptor_sel)
         palette.setColor(QPalette.Base, QtCore.Qt.white)
         valid = True
         try:
@@ -1219,7 +1211,7 @@ def new_run_docking_widget():
         except:
             palette.setColor(QPalette.Base, QtCore.Qt.red)
             valid = False
-        target_sel.setPalette(palette)
+        receptor_sel.setPalette(palette)
         return valid
 
     #
@@ -1392,7 +1384,7 @@ def new_run_docking_widget():
     button = QPushButton("Run", widget)
     @button.clicked.connect
     def run():
-        if not (validate_target_sel() & validate_flex_sel() & validate_box_sel()):
+        if not (validate_receptor_sel() & validate_flex_sel() & validate_box_sel()):
             return
         if not (project_dir):
             return
@@ -1409,7 +1401,7 @@ def new_run_docking_widget():
         dialog = VinaThreadDialog(
             project_dir,
             ligands_file,
-            target_sel.currentText(),
+            receptor_sel.currentText(),
             flex_sel.text(),
             box_sel.currentText(),
             box_margin_spin.value(),
@@ -1435,7 +1427,7 @@ def new_run_docking_widget():
     # setup layout
     #
     layout.addRow("Function:", function)
-    layout.addRow("Target:", target_sel)
+    layout.addRow("Receptor:", receptor_sel)
     layout.addRow("Flexible residues:", flex_sel)
     layout.addRow("Box:", box_sel)
     layout.addRow("Box margin:", box_margin_spin)
