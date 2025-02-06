@@ -2,7 +2,7 @@
     = vina.py =
 
     This plugin enables virtual screening with the AutoDock Vina software stack.
-    It uses MOlscrub and Meeko to prepare molecular ligands, and PLIP and
+    It uses Molscrub and Meeko to prepare molecular ligands, and PLIP and
     Matplotlib to analyze the results.
     
     It was tested on PyMOL 3.1 with Python 3.10. Currently supports only Linux
@@ -105,20 +105,16 @@ def run(command, log=True, cwd=None):
 # Install requirements
 #
 try:
-    import pandas
-except ImportError:
-    run("pip install pandas")
-try:
-    import lxml, matplotlib, openpyxl, scipy, meeko, plip, openbabel, rdkit
-    if not (shutil.which("qvina2") or shutil.which("qvinaw")):
-        raise ImportError
+    import matplotlib, openpyxl, scipy, meeko, plip, openbabel, rdkit, pandas
 except ImportError:
     run(
         "conda install -y"
-        " lxml matplotlib openpyxl scipy meeko plip openbabel qvina rdkit"
+        " matplotlib openpyxl scipy meeko plip openbabel rdkit pandas lxml"
     )
-if not shutil.which("scrub.py"):
-    run("pip install molscrub")
+try:
+    import scrubber, pandas
+except ImportError:
+    run("pip install https://github.com/pslacerda/molscrub/archive/refs/heads/windows.exe.zip")
 
 #
 # SInstall Vina
@@ -406,7 +402,7 @@ def parse_out_pdbqt(ligand_pdbqt):
 def load_plip_pose(receptor_pdbqt, ligand_pdbqt, mode):
     plip_pdb = '%s/plip.pdb' % TEMPDIR
     plip_pse = '%s/PLIP_PROTEIN_LIG_Z_1.pse' % TEMPDIR
-
+    
     cmd.delete("*")
     cmd.load(ligand_pdbqt, 'lig', multiplex=True, zoom=False)
     cmd.split_states('*')
@@ -418,7 +414,7 @@ def load_plip_pose(receptor_pdbqt, ligand_pdbqt, mode):
     
     cmd.load(receptor_pdbqt, 'prot')
     cmd.save(plip_pdb, selection="*")
-    print(cmd.get_object_list())
+
     
     command = f'python -m plip.plipcmd -qs -f "{plip_pdb}" -yx -o "{TEMPDIR}"'
     output, success = run(command, cwd=TEMPDIR)
@@ -455,6 +451,7 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
     ]
     count = 0
     for idx, pose in enumerate(poses):
+        
         if pose['mode'] > max_mode:
             continue
         name = pose["name"]
@@ -462,7 +459,8 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
         in_fname = project_dir + f'/output/{name}.out.pdbqt'
         out_fname = TEMPDIR + f'/{name}_m{mode}.out.pdb'
         cmd.delete('lig')
-        cmd.load(in_fname, 'lig', multiplex=True, zoom=False)
+        cmd.load(in_fname, 'lig')
+        cmd.split_states('lig')
         cmd.set_name(f'lig_{mode.zfill(4)}', 'lig')
         cmd.delete('lig_*')
         cmd.alter('lig', 'chain="Z"')
@@ -470,9 +468,9 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
         cmd.alter('lig', 'resi=1')
         cmd.alter('lig', "type='HETATM'")
         cmd.save(out_fname, selection='*')
-        command = f"python -m plip.plipcmd -v -f '{out_fname}' -qsx --nohydro -o {TEMPDIR}"
+        command = f"python -m plip.plipcmd -v -f '{out_fname}' -qsx --nohydro -o {TEMPDIR}/"
         logger.info(f"Obtaining XML from PLIP: {command}")
-        proc = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, cwd=TEMPDIR, shell=True)
+        proc = subprocess.run(command, cwd=TEMPDIR)
         with open(TEMPDIR + '/report.xml') as fp:
             plip = etree.parse(fp)
         for inter_type in interactions_type:
@@ -971,7 +969,8 @@ class VinaThread(BaseThread):
                     <br/>
                 """
             )
-            output, success = run(command)
+            os.system(command)
+            success =True
             self.logCodeEvent.emit(output)
             if not success:
                 self.done.emit(False)
