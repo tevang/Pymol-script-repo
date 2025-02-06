@@ -86,18 +86,20 @@ logger.debug(f'Logging to "{log_fname}')
 def run(command, log=True, cwd=None):
     if log:
         logger.info(f'Running subprocess: {command}')
+    # os.system(command)
+    # return b"", 0
     ret = subprocess.run(
         command,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         cwd=cwd,
         shell=True,
-        env=os.environ
+        env=os.environ,
     )
     output = ret.stdout.decode(errors='replace')
     success = ret.returncode == 0
     if log:
-        logger.debug(f'Subprocess retcode {ret.returncode}.')
+        logger.debug(f'Subprocess returned {ret.returncode}.')
     return output, success
 
 
@@ -109,15 +111,15 @@ try:
 except ImportError:
     run(
         "conda install -y"
-        " matplotlib openpyxl scipy meeko plip openbabel rdkit pandas lxml"
+        " matplotlib openpyxl scipy meeko openbabel rdkit pandas lxml plip"
     )
 try:
     import scrubber, pandas
 except ImportError:
-    run("pip install https://github.com/pslacerda/molscrub/archive/refs/heads/windows.exe.zip")
+    run("pip install plip https://github.com/pslacerda/molscrub/archive/refs/heads/windows.exe.zip")
 
 #
-# SInstall Vina
+# Install Vina
 #
 system = platform.system().lower()
 match system:
@@ -418,8 +420,6 @@ def load_plip_pose(receptor_pdbqt, ligand_pdbqt, mode):
     
     command = f'python -m plip.plipcmd -qs -f "{plip_pdb}" -yx -o "{TEMPDIR}"'
     output, success = run(command, cwd=TEMPDIR)
-    if not success:
-        logger.error(output)
     logger.error(output)
     cmd.load(plip_pse)
     cmd.valence('guess', 'all')
@@ -468,7 +468,7 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
         cmd.alter('lig', 'resi=1')
         cmd.alter('lig', "type='HETATM'")
         cmd.save(out_fname, selection='*')
-        command = f"python -m plip.plipcmd -v -f '{out_fname}' -qsx --nohydro -o {TEMPDIR}/"
+        command = f"python -m plip.plipcmd -v -f '{out_fname}' -x --nohydro -o {TEMPDIR}/"
         logger.info(f"Obtaining XML from PLIP: {command}")
         proc = subprocess.run(command, cwd=TEMPDIR)
         with open(TEMPDIR + '/report.xml') as fp:
@@ -925,6 +925,7 @@ class VinaThread(BaseThread):
             <br/>
         """)
         output, success = run(command)
+        print(111111111111111)
         self.logCodeEvent.emit(output)
         if not success:
             self.done.emit(False)
@@ -969,8 +970,7 @@ class VinaThread(BaseThread):
                     <br/>
                 """
             )
-            os.system(command)
-            success =True
+            output, success = run(command)
             self.logCodeEvent.emit(output)
             if not success:
                 self.done.emit(False)
@@ -1166,7 +1166,7 @@ class PyMOLComboObjectBox(QComboBox):
 
     def showPopup(self):
         currentText = self.currentText().strip()
-        objects = cmd.get_object_list(self.sele)
+        objects = cmd.get_object_list(self.sele, "all")
         self.clear()
         self.addItems(objects)
         if currentText != "":
