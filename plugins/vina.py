@@ -116,7 +116,11 @@ except ImportError:
 try:
     import scrubber, pandas
 except ImportError:
-    run("pip install plip https://github.com/pslacerda/molscrub/archive/refs/heads/windows.exe.zip")
+    run(
+        "pip install"
+        " https://github.com/pslacerda/molscrub/archive/refs/heads/windows.exe.zip"
+        " https://github.com/forlilab/Meeko/archive/refs/tags/v0.6.1.zip"
+    )
 
 #
 # Install Vina
@@ -256,13 +260,13 @@ class MapsGenerator:
 
     def generate(title, receptor_pdbqt, box):
         output, ok = run(
-            f"vina"
-            f" --force_even_voxels"
-            f" --write_maps {self.prefix}"
-            f" --receptor {receptor_pdbqt}"
-            f" --ligand '{self.dummy_pdbqt}'"
-            f" --size_x {self.size[0]} --size_y {self.size[1]} --size_z {self.size[2]}"
-            f" --center_x {self.center[0]} --center_y {self.center[1]} --center_z {self.center[2]}"
+            f'vina'
+            f' --force_even_voxels'
+            f' --write_maps "{self.prefix}"'
+            f' --receptor "{receptor_pdbqt}"'
+            f' --ligand "{self.dummy_pdbqt}"'
+            f' --size_x {self.size[0]} --size_y {self.size[1]} --size_z {self.size[2]}'
+            f' --center_x {self.center[0]} --center_y {self.center[1]} --center_z {self.center[2]}'
         )
         if not ok:
             raise Exception(f"Failed to generate vina maps for '{receptor_pdbqt}'")
@@ -468,7 +472,7 @@ def load_plip_full(project_dir, max_load, max_mode, tree_model):
         cmd.alter('lig', 'resi=1')
         cmd.alter('lig', "type='HETATM'")
         cmd.save(out_fname, selection='*')
-        command = f"python -m plip.plipcmd -v -f '{out_fname}' -x --nohydro -o {TEMPDIR}/"
+        command = f'python -m plip.plipcmd -v -f "{out_fname}" -x --nohydro -o "{TEMPDIR}/"'
         logger.info(f"Obtaining XML from PLIP: {command}")
         proc = subprocess.run(command, cwd=TEMPDIR)
         with open(TEMPDIR + '/report.xml') as fp:
@@ -925,7 +929,6 @@ class VinaThread(BaseThread):
             <br/>
         """)
         output, success = run(command)
-        print(111111111111111)
         self.logCodeEvent.emit(output)
         if not success:
             self.done.emit(False)
@@ -960,7 +963,7 @@ class VinaThread(BaseThread):
             #
             ligands_sdf = project_dir + "/ligands.sdf"
             command = (
-                f"python -m scrubber.main -o '{ligands_sdf}' --ph {ph} --cpu {cpu} '{ligands_file}'"
+                f'python -m scrubber.main -o "{ligands_sdf}" --ph {ph} --cpu {cpu} "{ligands_file}"'
             )
             self.logEvent.emit(
                 f"""
